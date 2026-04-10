@@ -5680,6 +5680,10 @@ class AIAgent:
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        generic_reasoning_effort = self._generic_chat_reasoning_effort()
+        if generic_reasoning_effort:
+            api_kwargs["reasoning_effort"] = generic_reasoning_effort
+
         # xAI prompt caching: send x-grok-conv-id header to route requests
         # to the same server, maximizing automatic cache hits.
         # https://docs.x.ai/developers/advanced-api-usage/prompt-caching
@@ -5758,6 +5762,36 @@ class AIAgent:
                 requested_effort = supported_efforts[0]
 
         return {"effort": requested_effort}
+
+    def _generic_chat_reasoning_effort(self) -> str | None:
+        """Return top-level reasoning_effort for generic OpenAI-style chat routes."""
+        if self.api_mode != "chat_completions":
+            return None
+        if self._supports_reasoning_extra_body():
+            return None
+
+        model = str(self.model or "").strip().lower()
+        if "/" in model:
+            model = model.split("/", 1)[1]
+
+        if not (
+            model.startswith("gpt-5")
+            or model.startswith("gpt-oss")
+            or model.startswith("o1")
+            or model.startswith("o3")
+            or model.startswith("o4")
+        ):
+            return None
+
+        if self.reasoning_config and isinstance(self.reasoning_config, dict):
+            if self.reasoning_config.get("enabled") is False:
+                return None
+            requested_effort = str(
+                self.reasoning_config.get("effort", "medium")
+            ).strip().lower()
+            return requested_effort or "medium"
+
+        return "medium"
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.

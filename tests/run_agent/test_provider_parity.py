@@ -310,6 +310,14 @@ class TestBuildApiKwargsCustomEndpoint:
         extra = kwargs.get("extra_body", {})
         assert "reasoning" not in extra
 
+    def test_includes_top_level_reasoning_effort_for_gpt5_proxy_route(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "custom", base_url="http://localhost:1234/v1")
+        agent.model = "gpt-5.4"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["reasoning_effort"] == "high"
+
     def test_fireworks_tool_call_payload_strips_codex_only_fields(self, monkeypatch):
         agent = _make_agent(
             monkeypatch,
