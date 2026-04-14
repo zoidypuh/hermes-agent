@@ -2742,6 +2742,12 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "fuel":
+            return await self._handle_fuel_command(event)
+
+        if canonical == "proxy-usage":
+            return await self._handle_proxy_usage_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -6244,6 +6250,200 @@ class GatewayRunner:
                 f"_(Detailed usage available after the first agent response)_"
             )
         return "No usage data available for this session."
+
+    async def _handle_fuel_command(self, event: MessageEvent) -> str:
+        """Handle /fuel -- show remaining Claude + Codex subscription quota."""
+        import json
+        import time
+        import urllib.request
+
+        proxy = "http://127.0.0.1:8317"
+        mgmt_key = "local"
+        accounts = [
+            {
+                "label": "Claude (iCloud)",
+                "authIndex": "b7201ae061d77c84",
+                "url": "https://api.anthropic.com/api/oauth/usage",
+                "headers": {"anthropic-beta": "oauth-2025-04-20"},
+            },
+            {
+                "label": "Claude (Gmail)",
+                "authIndex": "74edc30deb585445",
+                "url": "https://api.anthropic.com/api/oauth/usage",
+                "headers": {"anthropic-beta": "oauth-2025-04-20"},
+            },
+        ]
+        codex_accounts = [
+            {
+                "label": "Codex (thegismar@gmail.com)",
+                "authIndex": "493983766c96d073",
+                "url": "https://chatgpt.com/backend-api/wham/usage",
+                "headers": {},
+            },
+        ]
+
+        def _proxy_call(auth_index: str, method: str, url: str, extra_headers: dict) -> dict:
+            payload = json.dumps(
+                {
+                    "authIndex": auth_index,
+                    "method": method,
+                    "url": url,
+                    "header": {
+                        "Authorization": "Bearer $TOKEN$",
+                        "Content-Type": "application/json",
+                        **extra_headers,
+                    },
+                }
+            ).encode()
+            req = urllib.request.Request(
+                f"{proxy}/v0/management/api-call",
+                data=payload,
+                headers={"Authorization": f"Bearer {mgmt_key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                outer = json.loads(resp.read())
+            return json.loads(outer["body"])
+
+        def _fmt_reset(iso: str | None) -> str:
+            if not iso:
+                return ""
+            try:
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                dt = datetime.fromisoformat(iso)
+                diff = max(0, int(dt.timestamp() - time.time()))
+                mins = diff // 60
+                if mins < 60:
+                    return f"{mins}m"
+                h, m = divmod(mins, 60)
+                if h < 24:
+                    return f"{h}h" if m == 0 else f"{h}h {m}m"
+                d, h2 = divmod(h, 24)
+                return f"{d}d" if h2 == 0 else f"{d}d {h2}h"
+            except Exception:
+                return ""
+
+        def _bar(pct_left: float, w: int = 12) -> str:
+            pct_left = max(0.0, min(100.0, pct_left))
+            filled = round(pct_left / 100 * w)
+            return "█" * filled + "░" * (w - filled)
+
+        lines = ["⛽ **Fuel**"]
+
+        for acct in accounts:
+            try:
+                data = _proxy_call(acct["authIndex"], "GET", acct["url"], acct["headers"])
+                rows = []
+                for key, wlabel in [("five_hour", "5h"), ("seven_day", "7d")]:
+                    window = data.get(key) or {}
+                    util = window.get("utilization")
+                    if util is None:
+                        continue
+                    left = max(0.0, 100.0 - float(util))
+                    reset = _fmt_reset(window.get("resets_at"))
+                    reset_str = f" · resets {reset}" if reset else ""
+                    rows.append(f"  {wlabel:<4} [{_bar(left)}] {left:.0f}%{reset_str}")
+                lines.append(f"\n**{acct['label']}**")
+                lines.extend(rows if rows else ["  no data"])
+            except Exception as e:
+                lines.append(f"\n**{acct['label']}**: error — {e}")
+
+        for acct in codex_accounts:
+            try:
+                data = _proxy_call(acct["authIndex"], "GET", acct["url"], acct["headers"])
+                rate_limit = data.get("rate_limit") or {}
+                rows = []
+                for key, wlabel in [("primary_window", "5h"), ("secondary_window", "7d")]:
+                    window = rate_limit.get(key) or {}
+                    used_pct = window.get("used_percent")
+                    if used_pct is None:
+                        continue
+                    left = max(0.0, 100.0 - float(used_pct))
+                    reset_ts = window.get("reset_at")
+                    reset = ""
+                    if reset_ts:
+                        diff = max(0, int(reset_ts - time.time()))
+                        mins = diff // 60
+                        if mins < 60:
+                            reset = f"{mins}m"
+                        else:
+                            h, m = divmod(mins, 60)
+                            reset = f"{h}h" if m == 0 else f"{h}h {m}m"
+                    reset_str = f" · resets {reset}" if reset else ""
+                    rows.append(f"  {wlabel:<4} [{_bar(left)}] {left:.0f}%{reset_str}")
+                lines.append(f"\n**{acct['label']}**")
+                lines.extend(rows if rows else ["  no data"])
+            except Exception as e:
+                lines.append(f"\n**{acct['label']}**: error — {e}")
+
+        return "\n".join(lines)
+
+    async def _handle_proxy_usage_command(self, event: MessageEvent) -> str:
+        """Handle /proxy-usage -- show Hermes token usage through the local CLI proxy."""
+        import json
+        import time
+        import urllib.request
+
+        proxy = "http://127.0.0.1:8317"
+        mgmt_key = "local"
+
+        def _rel(iso: str) -> str:
+            try:
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                dt = datetime.fromisoformat(iso)
+                diff = int(time.time() - dt.timestamp())
+                if diff < 60:
+                    return f"{diff}s ago"
+                if diff < 3600:
+                    return f"{diff // 60}m ago"
+                h = diff // 3600
+                m = (diff % 3600) // 60
+                return f"{h}h {m}m ago" if m else f"{h}h ago"
+            except Exception:
+                return iso
+
+        try:
+            req = urllib.request.Request(
+                f"{proxy}/v0/management/usage/v2",
+                headers={"Authorization": f"Bearer {mgmt_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            return f"❌ Proxy unreachable: {e}"
+
+        entries = data.get("usage", {}).get("entries", [])
+        hermes = [entry for entry in entries if entry.get("client_api_key") == "***"]
+
+        if not hermes:
+            return "📡 **Proxy Usage** — no Hermes entries found (proxy may have just started)"
+
+        lines = ["📡 **Proxy Usage** _(since proxy start)_"]
+        for entry in hermes:
+            provider = entry.get("provider", "?")
+            source = entry.get("source", "?")
+            model = entry.get("model", "?")
+            ok = entry.get("success_count", 0)
+            fail = entry.get("failure_count", 0)
+            total = entry.get("total_tokens", 0)
+            inp = entry.get("input_tokens", 0)
+            out = entry.get("output_tokens", 0)
+            cached = entry.get("cached_tokens", 0)
+            reasoning = entry.get("reasoning_tokens", 0)
+            avg_ms = entry.get("avg_latency_ms", 0)
+            last = _rel(entry.get("last_request_at", ""))
+            avg_str = f"{avg_ms / 1000:.1f}s" if avg_ms >= 1000 else f"{avg_ms}ms"
+            reasoning_str = f" · {reasoning:,} reasoning" if reasoning else ""
+            lines.append(
+                f"\n**Hermes → {provider.title()} ({source} / {model})**\n"
+                f"  requests : {ok} ok, {fail} fail\n"
+                f"  tokens   : {total:,} total ({inp:,} in · {out:,} out · {cached:,} cached{reasoning_str})\n"
+                f"  latency  : avg {avg_str} · last {last}"
+            )
+
+        return "\n".join(lines)
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
