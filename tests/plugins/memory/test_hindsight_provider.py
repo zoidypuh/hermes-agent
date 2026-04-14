@@ -17,6 +17,7 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _ensure_healthy_local_embedded_daemon,
     _load_config,
 )
 
@@ -203,6 +204,74 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+
+class TestLocalEmbeddedDaemon:
+    def test_ensure_healthy_local_embedded_daemon_skips_restart_when_healthy(self, monkeypatch):
+        client = MagicMock()
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._get_hindsight_profile_port",
+            lambda profile: 9177,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._probe_hindsight_local_daemon",
+            lambda port, timeout=2.0: ("healthy", '{"status":"healthy","database":"ok"}'),
+        )
+
+        _ensure_healthy_local_embedded_daemon(client, "hermes")
+
+        client._ensure_started.assert_not_called()
+        client._manager.stop.assert_not_called()
+
+    def test_ensure_healthy_local_embedded_daemon_restarts_unhealthy_listener(self, monkeypatch):
+        client = MagicMock()
+        states = iter([
+            ("unhealthy", '{"status":"unhealthy","database":"error"}'),
+            ("down", "connection refused"),
+            ("healthy", '{"status":"healthy","database":"ok"}'),
+        ])
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._get_hindsight_profile_port",
+            lambda profile: 9177,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._probe_hindsight_local_daemon",
+            lambda port, timeout=2.0: next(states),
+        )
+        run_mock = MagicMock()
+        monkeypatch.setattr("plugins.memory.hindsight.subprocess.run", run_mock)
+        sleep_mock = MagicMock()
+        monkeypatch.setattr("plugins.memory.hindsight.time.sleep", sleep_mock)
+
+        _ensure_healthy_local_embedded_daemon(client, "hermes")
+
+        client._manager.stop.assert_called_once_with("hermes")
+        run_mock.assert_called_once()
+        client._ensure_started.assert_called_once()
+        sleep_mock.assert_not_called()
+
+    def test_ensure_healthy_local_embedded_daemon_raises_if_startup_is_still_unhealthy(self, monkeypatch):
+        client = MagicMock()
+        states = iter([
+            ("down", "connection refused"),
+            ("unhealthy", '{"status":"unhealthy","database":"error"}'),
+        ])
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._get_hindsight_profile_port",
+            lambda profile: 9177,
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._probe_hindsight_local_daemon",
+            lambda port, timeout=2.0: next(states),
+        )
+
+        with pytest.raises(RuntimeError, match="failed health check"):
+            _ensure_healthy_local_embedded_daemon(client, "hermes")
+
+        client._ensure_started.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

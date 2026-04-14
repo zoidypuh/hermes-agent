@@ -18,6 +18,7 @@ from gateway.platforms.base import (
     PlatformConfig,
     Platform,
 )
+from gateway.session import SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -25,8 +26,14 @@ from gateway.platforms.base import (
 # ---------------------------------------------------------------------------
 
 class _StubAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+    def __init__(self, busy_input_mode=None):
+        extra = {}
+        if busy_input_mode is not None:
+            extra["busy_input_mode"] = busy_input_mode
+        super().__init__(
+            PlatformConfig(enabled=True, token="test", extra=extra),
+            Platform.TELEGRAM,
+        )
 
     async def connect(self) -> bool:
         return True
@@ -184,3 +191,61 @@ class TestQueueConsumptionAfterCompletion:
 
         retrieved = adapter.get_pending_message(session_key)
         assert retrieved.text == "third"
+
+    @pytest.mark.asyncio
+    async def test_active_session_queue_mode_stores_followup_without_interrupt(self):
+        adapter = _StubAdapter(busy_input_mode="queue")
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+        session_key = "agent:main:telegram:dm:123"
+        interrupt_event = asyncio.Event()
+        adapter._active_sessions[session_key] = interrupt_event
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+        )
+
+        event = MessageEvent(
+            text="second thought",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="q5",
+        )
+
+        await adapter.handle_message(event)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued is event
+        assert interrupt_event.is_set() is False
+
+    @pytest.mark.asyncio
+    async def test_active_session_queue_mode_merges_multiple_followups(self):
+        adapter = _StubAdapter(busy_input_mode="queue")
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+        session_key = "agent:main:telegram:dm:123"
+        adapter._active_sessions[session_key] = asyncio.Event()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+        )
+
+        first = MessageEvent(
+            text="first follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="q6",
+        )
+        second = MessageEvent(
+            text="second follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="q7",
+        )
+
+        await adapter.handle_message(first)
+        await adapter.handle_message(second)
+
+        queued = adapter._pending_messages[session_key]
+        assert queued.text == "first follow-up\n\nsecond follow-up"
+        assert queued.message_id == "q7"

@@ -790,6 +790,9 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        self._busy_input_mode = self._normalize_busy_input_mode(
+            getattr(config, "extra", {}).get("busy_input_mode")
+        )
         self._message_handler: Optional[MessageHandler] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
@@ -938,7 +941,41 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
-    
+
+    @staticmethod
+    def _normalize_busy_input_mode(value: Any) -> str:
+        """Normalize active-session follow-up handling mode."""
+        if isinstance(value, str) and value.strip().lower() == "queue":
+            return "queue"
+        return "interrupt"
+
+    def _queue_pending_message(self, session_key: str, event: MessageEvent) -> MessageEvent:
+        """Store a follow-up for later delivery, merging rapid bursts when possible."""
+        existing = self._pending_messages.get(session_key)
+        if existing is None or existing is event:
+            self._pending_messages[session_key] = event
+            return event
+
+        if event.message_type == MessageType.PHOTO and existing.message_type == MessageType.PHOTO:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = self._merge_caption(existing.text, event.text)
+            return existing
+
+        if event.text:
+            existing.text = self._merge_caption(existing.text, event.text)
+        if event.media_urls:
+            existing.media_urls.extend(event.media_urls)
+        if event.media_types:
+            existing.media_types.extend(event.media_types)
+        if event.message_type == MessageType.PHOTO or existing.media_urls:
+            existing.message_type = MessageType.PHOTO
+        existing.message_id = event.message_id or existing.message_id
+        if event.source:
+            existing.source = event.source
+        return existing
+
     @abstractmethod
     async def connect(self) -> bool:
         """
@@ -1540,8 +1577,17 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                merge_pending_message_event(self._pending_messages, session_key, event)
+                self._queue_pending_message(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
+
+            if self._busy_input_mode == "queue":
+                logger.debug(
+                    "[%s] New message while session %s is active — queueing for the next turn",
+                    self.name,
+                    session_key,
+                )
+                self._queue_pending_message(session_key, event)
+                return
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)

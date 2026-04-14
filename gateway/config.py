@@ -462,6 +462,10 @@ def load_gateway_config() -> GatewayConfig:
         if config_yaml_path.exists():
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
+            display_cfg = yaml_cfg.get("display")
+            global_busy_input_mode = None
+            if isinstance(display_cfg, dict):
+                global_busy_input_mode = display_cfg.get("busy_input_mode")
 
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
@@ -546,6 +550,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "busy_input_mode" in platform_cfg:
+                    bridged["busy_input_mode"] = platform_cfg["busy_input_mode"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
@@ -561,6 +567,20 @@ def load_gateway_config() -> GatewayConfig:
                     extra = {}
                     plat_data["extra"] = extra
                 extra.update(bridged)
+
+            if global_busy_input_mode is not None:
+                for plat in Platform:
+                    if plat == Platform.LOCAL:
+                        continue
+                    plat_data = platforms_data.setdefault(plat.value, {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data[plat.value] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra.setdefault("busy_input_mode", global_busy_input_mode)
 
             # Slack settings → env vars (env vars take precedence)
             slack_cfg = yaml_cfg.get("slack", {})

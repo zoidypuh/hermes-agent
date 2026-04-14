@@ -22,10 +22,15 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import threading
+import time
 
 from hermes_constants import get_hermes_home
+from pathlib import Path
 from typing import Any, Dict, List
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
@@ -176,6 +181,88 @@ def _load_config() -> dict:
             }
         },
     }
+
+
+def _get_hindsight_profile_port(profile: str) -> int:
+    """Return the configured local embedded daemon port for *profile*."""
+    metadata_path = Path.home() / ".hindsight" / "profiles" / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        port = metadata.get("profiles", {}).get(profile, {}).get("port")
+        if port is not None:
+            return int(port)
+    except Exception:
+        pass
+    return 9177
+
+
+def _probe_hindsight_local_daemon(port: int, timeout: float = 2.0) -> tuple[str, str]:
+    """Return (state, detail) for the local embedded daemon health endpoint."""
+    url = f"http://127.0.0.1:{port}/health"
+    try:
+        with urllib_request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(body) if body else {}
+            except Exception:
+                payload = {}
+            status = str(payload.get("status", "")).lower()
+            database = str(payload.get("database", "")).lower()
+            if resp.status == 200 and status in {"ok", "healthy"} and database not in {"error", "unhealthy"}:
+                return "healthy", body
+            return "unhealthy", body or f"HTTP {resp.status}"
+    except urllib_error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return "unhealthy", body or f"HTTP {exc.code}"
+    except Exception as exc:
+        return "down", str(exc)
+
+
+def _ensure_healthy_local_embedded_daemon(client: Any, profile: str) -> None:
+    """Reuse a healthy daemon or recycle a stale listener before startup."""
+    port = _get_hindsight_profile_port(profile)
+    state, detail = _probe_hindsight_local_daemon(port)
+
+    if state == "healthy":
+        logger.info("Hindsight local daemon already healthy on port %s", port)
+        return
+
+    if state == "unhealthy":
+        logger.warning(
+            "Hindsight local daemon on port %s is unhealthy; recycling stale listener (%s)",
+            port,
+            detail,
+        )
+        manager = getattr(client, "_manager", None)
+        if manager is not None:
+            try:
+                manager.stop(profile)
+            except Exception:
+                logger.debug("Failed to stop managed Hindsight daemon for profile %s", profile, exc_info=True)
+
+        try:
+            subprocess.run(
+                ["pkill", "-f", f"hindsight-api --host 127.0.0.1 --port {port}"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            logger.debug("Failed to kill stale Hindsight listener on port %s", port, exc_info=True)
+
+        for _ in range(10):
+            next_state, _ = _probe_hindsight_local_daemon(port, timeout=0.5)
+            if next_state == "down":
+                break
+            time.sleep(0.5)
+
+    client._ensure_started()
+
+    final_state, final_detail = _probe_hindsight_local_daemon(port, timeout=3.0)
+    if final_state != "healthy":
+        raise RuntimeError(
+            f"Hindsight local daemon failed health check on port {port}: {final_detail}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +705,7 @@ class HindsightMemoryProvider(MemoryProvider):
                                 f.write("\n=== Config changed, restarting daemon ===\n")
                             client._manager.stop(profile)
 
-                    client._ensure_started()
+                    _ensure_healthy_local_embedded_daemon(client, profile)
                     with open(log_path, "a") as f:
                         f.write("\n=== Daemon started successfully ===\n")
                 except Exception as e:
