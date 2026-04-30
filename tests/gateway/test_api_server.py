@@ -332,6 +332,33 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
+class TestAgentOptions:
+    def test_create_agent_applies_per_request_options(self, adapter):
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}),
+            patch("gateway.run._resolve_gateway_model", return_value="default-model"),
+            patch("gateway.run._load_gateway_config", return_value={}),
+            patch("hermes_cli.tools_config._get_platform_tools", return_value={"file", "web"}),
+            patch("gateway.run.GatewayRunner._load_fallback_model", return_value=None),
+            patch.object(adapter, "_ensure_session_db", return_value=None),
+            patch("run_agent.AIAgent") as mock_agent,
+        ):
+            adapter._create_agent(
+                agent_options={
+                    "model": "voice-light-model",
+                    "enabled_toolsets": "terminal, web",
+                    "skip_context_files": True,
+                    "skip_memory": True,
+                }
+            )
+
+        kwargs = mock_agent.call_args.kwargs
+        assert kwargs["model"] == "voice-light-model"
+        assert kwargs["enabled_toolsets"] == ["terminal", "web"]
+        assert kwargs["skip_context_files"] is True
+        assert kwargs["skip_memory"] is True
+
+
 # ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------
@@ -566,6 +593,69 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_agent_options_are_forwarded_to_nonstream_run(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                return_value=(
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                ),
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "x_hermes_agent_options": {
+                            "model": "voice-light-model",
+                            "enabled_toolsets": [],
+                            "skip_context_files": True,
+                            "skip_memory": True,
+                        },
+                    },
+                )
+
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["agent_options"] == {
+            "model": "voice-light-model",
+            "enabled_toolsets": [],
+            "skip_context_files": True,
+            "skip_memory": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_options_are_forwarded_to_streaming_run(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("ok")
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                        "x_hermes_agent_options": {"enabled_toolsets": "terminal,web"},
+                    },
+                )
+                body = await resp.text()
+
+        assert resp.status == 200
+        assert "[DONE]" in body
+        assert mock_run.call_args.kwargs["agent_options"] == {"enabled_toolsets": "terminal,web"}
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):

@@ -717,6 +717,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        agent_options: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -735,6 +736,20 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        options = agent_options if isinstance(agent_options, dict) else {}
+        requested_model = str(options.get("model") or "").strip()
+        if requested_model:
+            model = requested_model
+        if "enabled_toolsets" in options:
+            raw_toolsets = options.get("enabled_toolsets")
+            if isinstance(raw_toolsets, str):
+                enabled_toolsets = [item.strip() for item in raw_toolsets.split(",") if item.strip()]
+            elif isinstance(raw_toolsets, (list, tuple, set)):
+                enabled_toolsets = [str(item).strip() for item in raw_toolsets if str(item).strip()]
+            else:
+                enabled_toolsets = []
+        skip_context_files = bool(options.get("skip_context_files", False))
+        skip_memory = bool(options.get("skip_memory", False))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -751,6 +766,8 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            skip_context_files=skip_context_files,
+            skip_memory=skip_memory,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -964,6 +981,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
+        agent_options = body.get("x_hermes_agent_options")
+        if not isinstance(agent_options, dict):
+            agent_options = {}
         created = int(time.time())
 
         if stream:
@@ -1047,6 +1067,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                agent_options=agent_options,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1061,11 +1082,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                agent_options=agent_options,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream", "x_hermes_agent_options"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2326,6 +2348,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        agent_options: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2348,6 +2371,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                agent_options=agent_options,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
