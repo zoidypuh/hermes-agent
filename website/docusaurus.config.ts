@@ -105,6 +105,11 @@ const config: Config = {
           position: 'left',
         },
         {
+          to: '/contributor-course',
+          label: 'Codebase Course',
+          position: 'left',
+        },
+        {
           href: 'https://hermes-agent.nousresearch.com',
           label: 'Home',
           position: 'right',
