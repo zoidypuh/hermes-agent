@@ -100,7 +100,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    if not getattr(agent, "minimal_prompt", False):
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -217,9 +218,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
-    _env_hints = _r.build_environment_hints()
-    if _env_hints:
-        stable_parts.append(_env_hints)
+    if not getattr(agent, "minimal_prompt", False):
+        _env_hints = _r.build_environment_hints()
+        if _env_hints:
+            stable_parts.append(_env_hints)
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -228,7 +230,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # entirely for remote terminal backends (the host's Python state is
     # irrelevant when tools run inside docker/modal/ssh).  Gated by
     # config.yaml ``agent.environment_probe`` (default True).
-    if getattr(agent, "_environment_probe", True):
+    if not getattr(agent, "minimal_prompt", False) and getattr(agent, "_environment_probe", True):
         try:
             from tools.env_probe import get_environment_probe_line
             _probe_line = get_environment_probe_line()
@@ -245,45 +247,47 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # mid-session, so this doesn't break the prompt cache.
     # See file_safety._resolve_active_profile_name + classify_cross_profile_target
     # for the matching tool-side guard.
-    try:
-        from agent.file_safety import _resolve_active_profile_name
-        active_profile = _resolve_active_profile_name()
-    except Exception:
-        active_profile = "default"
-    if active_profile == "default":
-        stable_parts.append(
-            "Active Hermes profile: default. Other profiles (if any) live "
-            "under ~/.hermes/profiles/<name>/. Each profile has its own "
-            "skills/, plugins/, cron/, and memories/ that affect a different "
-            "session than this one. Do not modify another profile's "
-            "skills/plugins/cron/memories unless the user explicitly directs "
-            "you to."
-        )
-    else:
-        stable_parts.append(
-            f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to. The cross-profile write guard will "
-            f"refuse such writes by default; pass cross_profile=True only "
-            f"after explicit direction."
-        )
+    if not getattr(agent, "minimal_prompt", False):
+        try:
+            from agent.file_safety import _resolve_active_profile_name
+            active_profile = _resolve_active_profile_name()
+        except Exception:
+            active_profile = "default"
+        if active_profile == "default":
+            stable_parts.append(
+                "Active Hermes profile: default. Other profiles (if any) live "
+                "under ~/.hermes/profiles/<name>/. Each profile has its own "
+                "skills/, plugins/, cron/, and memories/ that affect a different "
+                "session than this one. Do not modify another profile's "
+                "skills/plugins/cron/memories unless the user explicitly directs "
+                "you to."
+            )
+        else:
+            stable_parts.append(
+                f"Active Hermes profile: {active_profile}. This session reads "
+                f"and writes ~/.hermes/profiles/{active_profile}/. The default "
+                f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
+                f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+                f"different session run from a different shell. Do NOT modify "
+                f"another profile's skills/plugins/cron/memories unless the user "
+                f"explicitly directs you to. The cross-profile write guard will "
+                f"refuse such writes by default; pass cross_profile=True only "
+                f"after explicit direction."
+            )
 
     platform_key = (agent.platform or "").lower().strip()
-    if platform_key in PLATFORM_HINTS:
-        stable_parts.append(PLATFORM_HINTS[platform_key])
-    elif platform_key:
-        # Check plugin registry for platform-specific LLM guidance
-        try:
-            from gateway.platform_registry import platform_registry
-            _entry = platform_registry.get(platform_key)
-            if _entry and _entry.platform_hint:
-                stable_parts.append(_entry.platform_hint)
-        except Exception:
-            pass
+    if not getattr(agent, "minimal_prompt", False):
+        if platform_key in PLATFORM_HINTS:
+            stable_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    stable_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []
@@ -326,22 +330,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
-    from hermes_time import now as _hermes_now
-    now = _hermes_now()
-    # Date-only (not minute-precision) so the system prompt is byte-stable
-    # for the full day.  Minute-precision changes invalidate prefix-cache KV
-    # on every rebuild path (compression boundary, fresh-agent gateway turns,
-    # session resume without a stored prompt).  The model can still query the
-    # exact wall-clock time via tools when it actually needs it.
-    # Credit: @iamfoz (PR #20451).
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
-    if agent.pass_session_id and agent.session_id:
-        timestamp_line += f"\nSession ID: {agent.session_id}"
-    if agent.model:
-        timestamp_line += f"\nModel: {agent.model}"
-    if agent.provider:
-        timestamp_line += f"\nProvider: {agent.provider}"
-    volatile_parts.append(timestamp_line)
+    if not getattr(agent, "minimal_prompt", False):
+        from hermes_time import now as _hermes_now
+        now = _hermes_now()
+        # Date-only (not minute-precision) so the system prompt is byte-stable
+        # for the full day.  Minute-precision changes invalidate prefix-cache KV
+        # on every rebuild path (compression boundary, fresh-agent gateway turns,
+        # session resume without a stored prompt).  The model can still query the
+        # exact wall-clock time via tools when it actually needs it.
+        # Credit: @iamfoz (PR #20451).
+        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
+        if agent.pass_session_id and agent.session_id:
+            timestamp_line += f"\nSession ID: {agent.session_id}"
+        if agent.model:
+            timestamp_line += f"\nModel: {agent.model}"
+        if agent.provider:
+            timestamp_line += f"\nProvider: {agent.provider}"
+        volatile_parts.append(timestamp_line)
 
     return {
         "stable":   "\n\n".join(p.strip() for p in stable_parts   if p and p.strip()),

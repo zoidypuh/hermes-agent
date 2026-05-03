@@ -3186,6 +3186,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Coupling the two (PR #6a1aa420e) caused all module DEBUG logs to spew
         # to console whenever a user set tool_progress: verbose in config.
         self.verbose = bool(verbose) if verbose is not None else False
+        _minimal_prompt = CLI_CONFIG.get("agent", {}).get("minimal_prompt", False)
+        if isinstance(_minimal_prompt, str):
+            self.minimal_prompt = _minimal_prompt.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            self.minimal_prompt = bool(_minimal_prompt)
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
