@@ -2028,6 +2028,17 @@ class HermesCLI:
             self.busy_input_mode = "interrupt"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        try:
+            self.max_tokens = CLI_CONFIG.get("agent", {}).get("max_tokens")
+            if self.max_tokens is not None:
+                self.max_tokens = int(self.max_tokens)
+        except Exception:
+            self.max_tokens = None
+        _minimal_prompt = CLI_CONFIG.get("agent", {}).get("minimal_prompt", False)
+        if isinstance(_minimal_prompt, str):
+            self.minimal_prompt = _minimal_prompt.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            self.minimal_prompt = bool(_minimal_prompt)
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
@@ -3590,6 +3601,8 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                max_tokens=self.max_tokens,
+                minimal_prompt=self.minimal_prompt,
                 service_tier=self.service_tier,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
