@@ -735,6 +735,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        agent_config = user_config.get("agent", {}) if isinstance(user_config, dict) else {}
+
+        max_tokens = agent_config.get("max_tokens")
+        try:
+            max_tokens = int(max_tokens) if max_tokens is not None else None
+        except Exception:
+            max_tokens = None
+
+        minimal_prompt = agent_config.get("minimal_prompt", False)
+        if isinstance(minimal_prompt, str):
+            minimal_prompt = minimal_prompt.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            minimal_prompt = bool(minimal_prompt)
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -751,6 +764,8 @@ class APIServerAdapter(BasePlatformAdapter):
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
+            max_tokens=max_tokens,
+            minimal_prompt=minimal_prompt,
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,

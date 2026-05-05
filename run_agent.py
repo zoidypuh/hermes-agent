@@ -956,6 +956,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        minimal_prompt: bool = False,
     ):
         """
         Initialize the AI Agent.
@@ -1001,6 +1002,8 @@ class AIAgent:
             load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
                 identity even when skip_context_files=True. Project context files from the cwd
                 remain skipped.
+            minimal_prompt (bool): If True, keep the identity/context prompt but skip generic
+                Hermes help, timestamp, platform, and environment guidance.
         """
         _install_safe_stdio()
 
@@ -1031,6 +1034,7 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
+        self.minimal_prompt = minimal_prompt
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -4835,7 +4839,8 @@ class AIAgent:
             prompt_parts = [DEFAULT_AGENT_IDENTITY]
 
         # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-        prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+        if not self.minimal_prompt:
+            prompt_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -4946,16 +4951,17 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        from hermes_time import now as _hermes_now
-        now = _hermes_now()
-        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
-        if self.pass_session_id and self.session_id:
-            timestamp_line += f"\nSession ID: {self.session_id}"
-        if self.model:
-            timestamp_line += f"\nModel: {self.model}"
-        if self.provider:
-            timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        if not self.minimal_prompt:
+            from hermes_time import now as _hermes_now
+            now = _hermes_now()
+            timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+            if self.pass_session_id and self.session_id:
+                timestamp_line += f"\nSession ID: {self.session_id}"
+            if self.model:
+                timestamp_line += f"\nModel: {self.model}"
+            if self.provider:
+                timestamp_line += f"\nProvider: {self.provider}"
+            prompt_parts.append(timestamp_line)
 
         # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
         # of the requested model. Inject explicit model identity into the system prompt
@@ -4971,22 +4977,23 @@ class AIAgent:
 
         # Environment hints (WSL, Termux, etc.) — tell the agent about the
         # execution environment so it can translate paths and adapt behavior.
-        _env_hints = build_environment_hints()
-        if _env_hints:
-            prompt_parts.append(_env_hints)
+        if not self.minimal_prompt:
+            _env_hints = build_environment_hints()
+            if _env_hints:
+                prompt_parts.append(_env_hints)
 
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
-        elif platform_key:
-            # Check plugin registry for platform-specific LLM guidance
-            try:
-                from gateway.platform_registry import platform_registry
-                _entry = platform_registry.get(platform_key)
-                if _entry and _entry.platform_hint:
-                    prompt_parts.append(_entry.platform_hint)
-            except Exception:
-                pass
+            platform_key = (self.platform or "").lower().strip()
+            if platform_key in PLATFORM_HINTS:
+                prompt_parts.append(PLATFORM_HINTS[platform_key])
+            elif platform_key:
+                # Check plugin registry for platform-specific LLM guidance
+                try:
+                    from gateway.platform_registry import platform_registry
+                    _entry = platform_registry.get(platform_key)
+                    if _entry and _entry.platform_hint:
+                        prompt_parts.append(_entry.platform_hint)
+                except Exception:
+                    pass
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
@@ -11121,6 +11128,12 @@ class AIAgent:
                         or str(self.base_url or "").lower().startswith("acp://copilot")
                         or str(self.base_url or "").lower().startswith("acp+tcp://")
                     ):
+                        _use_streaming = False
+                    elif str(self.model or "").lower().endswith("minimax-m2.7"):
+                        # The Mac vmlx MiniMax-M2.7 endpoint currently accepts
+                        # SSE but stalls after the role-only bootstrap chunk.
+                        # Use non-streaming for this profile/model so short
+                        # one-shot Hermes calls return normally.
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
