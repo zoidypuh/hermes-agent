@@ -23,6 +23,7 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
+const docsIndexScript = join(scriptDir, "docs-index.mjs");
 const outputFile = join(websiteDir, "src", "data", "skills.json");
 
 function writeEmptyFallback(reason) {
@@ -66,5 +67,18 @@ if (!existsSync(extractScript)) {
   }
 }
 
-// 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.
+// 2) docs_manifest.json + docs_index.md — cheap lexical docs lookup for agents.
+if (existsSync(docsIndexScript)) {
+  const r = spawnSync("node", [docsIndexScript, "generate"], {
+    stdio: "inherit",
+    cwd: websiteDir,
+  });
+  if (r.error && r.error.code === "ENOENT") {
+    console.warn("[prebuild] docs-index skipped (node not found)");
+  } else if (r.status !== 0) {
+    console.warn(`[prebuild] docs-index exited with status ${r.status}`);
+  }
+}
+
+// 3) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.
 runPython(llmsScript, "generate-llms-txt.py");
