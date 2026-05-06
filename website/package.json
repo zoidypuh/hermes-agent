@@ -7,6 +7,8 @@
     "prestart": "node scripts/prebuild.mjs",
     "start": "docusaurus start",
     "prebuild": "node scripts/prebuild.mjs",
+    "docs:index": "node scripts/docs-index.mjs generate",
+    "docs:search": "node scripts/docs-index.mjs search",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
