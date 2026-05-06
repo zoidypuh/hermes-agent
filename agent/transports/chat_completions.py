@@ -19,6 +19,27 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _merge_session_headers(api_kwargs: Dict[str, Any], session_id: Any) -> None:
+    """Expose the Hermes session to proxy layers without touching prompt text."""
+    normalized = str(session_id or "").strip()
+    if not normalized:
+        return
+
+    existing = api_kwargs.get("extra_headers")
+    headers: Dict[str, str] = {}
+    if isinstance(existing, dict):
+        headers.update(
+            {
+                str(key): str(value)
+                for key, value in existing.items()
+                if key and value is not None
+            }
+        )
+
+    headers["session_id"] = normalized
+    api_kwargs["extra_headers"] = headers
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
@@ -372,6 +393,8 @@ class ChatCompletionsTransport(ProviderTransport):
         overrides = params.get("request_overrides")
         if overrides:
             api_kwargs.update(overrides)
+
+        _merge_session_headers(api_kwargs, params.get("session_id"))
 
         return api_kwargs
 

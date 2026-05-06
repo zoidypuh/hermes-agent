@@ -56,6 +56,29 @@ class TestChatCompletionsBuildKwargs:
         assert kw["messages"][0]["content"] == "Hello"
         assert kw["timeout"] == 30.0
 
+    def test_session_id_sets_proxy_visible_header(self, transport):
+        msgs = [{"role": "user", "content": "Hello"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            session_id="hermes-session-123",
+        )
+        assert kw["extra_headers"] == {"session_id": "hermes-session-123"}
+        assert kw["messages"][0]["content"] == "Hello"
+
+    def test_session_id_preserves_request_override_headers(self, transport):
+        msgs = [{"role": "user", "content": "Hello"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=msgs,
+            session_id="hermes-session-123",
+            request_overrides={"extra_headers": {"X-Test": "1"}},
+        )
+        assert kw["extra_headers"] == {
+            "X-Test": "1",
+            "session_id": "hermes-session-123",
+        }
+
     def test_developer_role_swap(self, transport):
         msgs = [{"role": "system", "content": "You are helpful"}, {"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(model="gpt-5.4", messages=msgs, model_lower="gpt-5.4")
