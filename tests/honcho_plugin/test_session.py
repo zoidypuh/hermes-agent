@@ -293,6 +293,57 @@ class TestPeerLookupHelpers:
         user_peer.context.assert_called_once_with(target=session.user_peer_id)
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
+    def test_get_prefetch_context_skips_session_summary_by_default(self):
+        mgr, session = self._make_cached_manager()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="Stale session summary")
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User representation",
+            peer_card=["Name: Robert"],
+        )
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="AI representation",
+            peer_card=["Role: Assistant"],
+        )
+        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert "summary" not in result
+        honcho_session.context.assert_not_called()
+
+    def test_get_prefetch_context_can_opt_into_session_summary(self):
+        mgr, session = self._make_cached_manager()
+        mgr._config = SimpleNamespace(auto_inject_session_summary=True)
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=SimpleNamespace(content="Fresh enough summary")
+        )
+        mgr._sessions_cache[session.honcho_session_id] = honcho_session
+
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User representation",
+            peer_card=["Name: Robert"],
+        )
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="AI representation",
+            peer_card=["Role: Assistant"],
+        )
+        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert result["summary"] == "Fresh enough summary"
+        honcho_session.context.assert_called_once_with(summary=True)
+
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
         ai_peer = MagicMock()
@@ -850,9 +901,8 @@ class TestDialecticInputGuard:
 
 
 def _settle_prewarm(provider):
-    """Wait for the session-start prewarm dialectic thread, then return the
-    provider to a clean 'nothing fired yet' state so cadence/first-turn/
-    trivial-prompt tests can assert from a known baseline."""
+    """Return the provider to a clean 'nothing fired yet' state so cadence,
+    first-turn, and trivial-prompt tests can assert from a known baseline."""
     if provider._prefetch_thread:
         provider._prefetch_thread.join(timeout=3.0)
     with provider._prefetch_lock:
@@ -940,6 +990,81 @@ class TestBaseContextSummary:
         ctx = {"summary": "", "representation": "rep", "card": "card"}
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
+
+
+class TestQueryFilteredAutoInjection:
+    """Automatic context injection should be tied to the current user query."""
+
+    def test_initialize_does_not_prewarm_unfiltered_base_context(self):
+        from unittest.mock import patch
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(api_key="test-key", enabled=True, recall_mode="hybrid")
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        mock_manager.dialectic_query.return_value = ""
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-query-filtered")
+
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=3.0)
+
+        mock_manager.prefetch_context.assert_not_called()
+
+    def test_first_turn_base_context_uses_current_query(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._manager = MagicMock()
+        provider._session_key = "test-query-filtered"
+        provider._turn_count = 1
+        provider._last_dialectic_turn = 0
+        provider._manager.get_prefetch_context.return_value = {
+            "representation": "Relevant DaSiWa preference",
+            "card": "",
+        }
+        provider._manager.pop_context_result.return_value = {}
+
+        result = provider.prefetch("compare DaSiWa settings")
+
+        provider._manager.get_prefetch_context.assert_called_once_with(
+            "test-query-filtered",
+            "compare DaSiWa settings",
+        )
+        assert "Relevant DaSiWa preference" in result
+
+    def test_auto_context_drops_lines_unrelated_to_query(self):
+        text = (
+            "## Explicit Observations\n"
+            "[2026-05-04] gismar's Nadia assistant uses the NVIDIA Nemotron vision model.\n"
+            "[2026-05-04] gismar uses Supertonic F2 for Text-to-Speech (TTS)."
+        )
+
+        result = HonchoMemoryProvider._filter_context_by_query(
+            text,
+            "For a live smoke test, answer exactly HONCHO_FILTER_OK.",
+        )
+
+        assert result == ""
+
+    def test_auto_context_keeps_lines_related_to_query(self):
+        text = (
+            "## Explicit Observations\n"
+            "[2026-05-04] gismar's Nadia assistant uses the NVIDIA Nemotron vision model.\n"
+            "[2026-05-04] gismar uses Supertonic F2 for Text-to-Speech (TTS)."
+        )
+
+        result = HonchoMemoryProvider._filter_context_by_query(
+            text,
+            "Which vision setup does Nadia use?",
+        )
+
+        assert "Nadia assistant" in result
+        assert "Supertonic" not in result
 
 
 class TestDialecticDepth:
@@ -1250,11 +1375,10 @@ class TestDialecticCadenceAdvancesOnSuccess:
 
 
 class TestSessionStartDialecticPrewarm:
-    """Session-start prewarm fires a depth-aware dialectic whose result is
-    consumed by turn 1 — no duplicate .chat() and no dead-cache orphaning."""
+    """Session-start should not inject queryless dialectic memory."""
 
     @staticmethod
-    def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis"):
+    def _make_provider(cfg_extra=None, dialectic_result="query synthesis"):
         from unittest.mock import patch, MagicMock
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -1276,48 +1400,46 @@ class TestSessionStartDialecticPrewarm:
             provider.initialize(session_id="test-prewarm")
         return provider
 
-    def test_prewarm_populates_prefetch_result(self):
+    def test_startup_does_not_prewarm_dialectic(self):
         p = self._make_provider()
-        # Wait for prewarm thread to land
         if p._prefetch_thread:
             p._prefetch_thread.join(timeout=3.0)
         with p._prefetch_lock:
-            assert p._prefetch_result == "prewarm synthesis"
-        assert p._last_dialectic_turn == 0
-
-    def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):
-        """With prewarm result already in _prefetch_result, turn 1 prefetch
-        should NOT fire another dialectic."""
-        p = self._make_provider()
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=3.0)
-        p._manager.dialectic_query.reset_mock()
-        p._session_key = "test-prewarm"
-        p._base_context_cache = ""
-        p._turn_count = 1
-
-        result = p.prefetch("hello world")
-        assert "prewarm synthesis" in result
-        # The sync first-turn path must NOT have fired another .chat()
+            assert p._prefetch_result == ""
+        assert p._last_dialectic_turn == -999
         assert p._manager.dialectic_query.call_count == 0
 
-    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
-        """If the prewarm produced nothing (empty graph, API blip), turn 1
-        still fires its own sync dialectic."""
-        p = self._make_provider(dialectic_result="")  # prewarm returns empty
+    def test_turn1_runs_query_specific_dialectic(self):
+        """Turn 1 should run dialectic against the actual user query."""
+        p = self._make_provider()
         if p._prefetch_thread:
             p._prefetch_thread.join(timeout=3.0)
-        with p._prefetch_lock:
-            assert p._prefetch_result == ""  # prewarm landed nothing
-        # Switch dialectic_query to return something on the sync first-turn call
-        p._manager.dialectic_query.return_value = "sync recovery"
         p._manager.dialectic_query.reset_mock()
         p._session_key = "test-prewarm"
         p._base_context_cache = ""
         p._turn_count = 1
 
         result = p.prefetch("hello world")
-        assert "sync recovery" in result
+        assert "query synthesis" in result
+        assert p._manager.dialectic_query.call_count == 1
+        _, prompt = p._manager.dialectic_query.call_args.args[:2]
+        assert "Current user request" in prompt
+        assert "hello world" in prompt
+
+    def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
+        """If the dialectic returns nothing, turn 1 returns only base context."""
+        p = self._make_provider(dialectic_result="")
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+        with p._prefetch_lock:
+            assert p._prefetch_result == ""
+        p._manager.dialectic_query.reset_mock()
+        p._session_key = "test-prewarm"
+        p._base_context_cache = ""
+        p._turn_count = 1
+
+        result = p.prefetch("hello world")
+        assert result == ""
         assert p._manager.dialectic_query.call_count == 1
 
 
@@ -1463,7 +1585,7 @@ class TestDialecticLiveness:
 
 
 class TestDialecticLifecycleSmoke:
-    """End-to-end smoke walking a multi-turn session through prewarm,
+    """End-to-end smoke walking a multi-turn session through first-turn dialectic,
     turn 1 consume, trivial skip, cadence fire, empty-result retry,
     heuristic bump, and session-end flush."""
 
@@ -1514,14 +1636,14 @@ class TestDialecticLifecycleSmoke:
         # Program the dialectic responses in the exact order they'll be requested.
         # An extra or missing call fails the test — strong smoke signal.
         responses = iter([
-            "prewarm: user is eri, works on hermes",      # session-start prewarm
+            "turn1: user is eri, works on hermes",        # turn 1 query-filtered dialectic
             "cadence fire: long query synthesis",         # turn 4 queue_prefetch
             "",                                           # turn 7 fire: silent failure
             "retry success: fresh synthesis",             # turn 8 queue_prefetch retry
         ])
         mgr.dialectic_query.side_effect = lambda *a, **kw: next(responses)
 
-        # ---- init: prewarm fires ----
+        # ---- init: no queryless prewarm ----
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mgr), \
@@ -1530,20 +1652,20 @@ class TestDialecticLifecycleSmoke:
 
         self._await_thread(provider)
         with provider._prefetch_lock:
-            assert provider._prefetch_result.startswith("prewarm"), \
-                "session-start prewarm must land in _prefetch_result"
-        assert provider._last_dialectic_turn == 0, "prewarm marks turn 0"
-        assert mgr.dialectic_query.call_count == 1
+            assert provider._prefetch_result == "", \
+                "session-start must not cache queryless dialectic memory"
+        assert provider._last_dialectic_turn == -999
+        assert mgr.dialectic_query.call_count == 0
 
-        # ---- turn 1: consume prewarm, no duplicate dialectic ----
+        # ---- turn 1: query-filtered first dialectic ----
         provider.on_turn_start(1, "hey")
         inject1 = provider.prefetch("hey")
-        assert "prewarm" in inject1, "turn 1 must surface prewarm"
+        assert "turn1" in inject1, "turn 1 must surface query-filtered dialectic"
         provider.sync_turn("hey", "hi there")
-        provider.queue_prefetch("hey")  # cadence gate: (1-0)<3 → skip
+        provider.queue_prefetch("hey")  # cadence gate: (1-1)<3 → skip
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 1, \
-            "turn 1 must not fire — prewarm covered it and cadence skips"
+            "turn 1 plus immediate queue should only fire one dialectic call"
 
         # ---- turn 2: trivial 'ok' → skip everything ----
         mgr.prefetch_context.reset_mock()
@@ -1566,7 +1688,7 @@ class TestDialecticLifecycleSmoke:
         provider.on_turn_start(4, long_q)
         provider.prefetch(long_q)
         provider.sync_turn(long_q, "sure")
-        provider.queue_prefetch(long_q)  # (4-0)≥3 → fires
+        provider.queue_prefetch(long_q)  # (4-1)≥3 → fires
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
         _, kwargs = mgr.dialectic_query.call_args

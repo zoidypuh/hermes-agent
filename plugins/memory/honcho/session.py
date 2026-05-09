@@ -626,10 +626,10 @@ class HonchoSessionManager:
         Pre-fetch user and AI peer context from Honcho.
 
         Fetches peer_representation and peer_card for both peers, plus the
-        session summary when available. When user_message is provided, it is
-        passed as search_query to the peer context call so Honcho returns
-        conclusions relevant to the session topic rather than the full
-        observation dump.
+        session summary only when autoInjectSessionSummary is explicitly
+        enabled. When user_message is provided, it is passed as search_query
+        to the peer context call so Honcho returns conclusions relevant to the
+        session topic rather than the full observation dump.
 
         Args:
             session_key: The session key to get context for.
@@ -649,15 +649,21 @@ class HonchoSessionManager:
         # Session summary — provides session-scoped context.
         # Fresh sessions (per-session cold start, or first-ever per-directory)
         # return null summary — the guard below handles that gracefully.
-        # Per-directory returning sessions get their accumulated summary.
-        try:
-            honcho_session = self._sessions_cache.get(session.honcho_session_id)
-            if honcho_session:
-                ctx = honcho_session.context(summary=True)
-                if ctx.summary and getattr(ctx.summary, "content", None):
-                    result["summary"] = ctx.summary.content
-        except Exception as e:
-            logger.debug("Failed to fetch session summary from Honcho: %s", e)
+        # Per-directory returning sessions can get accumulated summaries, but
+        # those are broad and can drift from the current turn, so automatic
+        # prompt injection is opt-in.
+        auto_inject_summary = bool(
+            getattr(self._config, "auto_inject_session_summary", False)
+        )
+        if auto_inject_summary:
+            try:
+                honcho_session = self._sessions_cache.get(session.honcho_session_id)
+                if honcho_session:
+                    ctx = honcho_session.context(summary=True)
+                    if ctx.summary and getattr(ctx.summary, "content", None):
+                        result["summary"] = ctx.summary.content
+            except Exception as e:
+                logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
             user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)

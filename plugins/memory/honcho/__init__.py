@@ -399,45 +399,12 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # ----- B7: Pre-warming at init -----
-        # Context prewarm warms peer.context() (base layer), consumed via
-        # pop_context_result() in prefetch(). Dialectic prewarm runs the
-        # full configured depth and writes into _prefetch_result so turn 1
-        # consumes the result directly.
-        if self._recall_mode in ("context", "hybrid"):
-            try:
-                self._manager.prefetch_context(self._session_key)
-            except Exception as e:
-                logger.debug("Honcho context prewarm failed: %s", e)
-
-            _prewarm_query = (
-                "Summarize what you know about this user. "
-                "Focus on preferences, current projects, and working style."
-            )
-
-            def _prewarm_dialectic() -> None:
-                try:
-                    r = self._run_dialectic_depth(_prewarm_query)
-                except Exception as exc:
-                    logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = 0
-                    # Treat prewarm as turn 0 so cadence gating starts clean.
-                    self._last_dialectic_turn = 0
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
-
-            self._prefetch_thread_started_at = time.monotonic()
-            self._prefetch_thread = threading.Thread(
-                target=_prewarm_dialectic, daemon=True, name="honcho-prewarm-dialectic"
-            )
-            self._prefetch_thread.start()
-            logger.debug("Honcho pre-warm started for session: %s", self._session_key)
+        # ----- B7: No queryless pre-warming -----
+        # Automatic memory injection must be anchored to the current user
+        # request. Queryless base context or dialectic prewarm can surface
+        # valid but unrelated peer observations, so prefetch() does the first
+        # retrieval after it sees the turn text.
+        logger.debug("Honcho query-filtered prefetch deferred until first turn: %s", self._session_key)
 
     def _ensure_session(self) -> bool:
         """Lazily initialize the Honcho session (for tools-only mode).
@@ -493,6 +460,51 @@ class HonchoMemoryProvider(MemoryProvider):
         if not parts:
             return ""
         return "\n\n".join(parts)
+
+    _RELEVANCE_STOPWORDS = {
+        "about", "after", "again", "answer", "assistant", "before", "being",
+        "check", "compare", "context", "current", "discussion", "exactly",
+        "generation", "image", "images", "info", "information", "memory",
+        "model", "models", "please", "request", "smoke", "system", "test",
+        "that", "their", "there", "these", "thing", "things", "this",
+        "tools", "user", "what", "when", "where", "which", "with",
+    }
+
+    @classmethod
+    def _relevance_terms(cls, text: str) -> set[str]:
+        terms = set()
+        for term in re.findall(r"[a-z0-9][a-z0-9_.@/-]{2,}", (text or "").lower()):
+            term = term.strip("._/-")
+            if len(term) < 4 or term in cls._RELEVANCE_STOPWORDS:
+                continue
+            terms.add(term)
+        return terms
+
+    @classmethod
+    def _filter_context_by_query(cls, text: str, query: str) -> str:
+        """Drop auto-injected peer context that has no lexical tie to the turn."""
+        if not text or not text.strip():
+            return ""
+
+        query_terms = cls._relevance_terms(query)
+        if not query_terms:
+            return ""
+
+        kept_sections: list[str] = []
+        for section in re.split(r"\n\n(?=## )", text.strip()):
+            lines = section.splitlines()
+            if not lines:
+                continue
+            header = lines[0] if lines[0].startswith("## ") else ""
+            body_lines = lines[1:] if header else lines
+            kept_body = [
+                line for line in body_lines
+                if query_terms & cls._relevance_terms(line)
+            ]
+            if kept_body:
+                kept_sections.append("\n".join(([header] if header else []) + kept_body))
+
+        return "\n\n".join(kept_sections)
 
     def system_prompt_block(self) -> str:
         """Return system prompt text, adapted by recall_mode.
@@ -580,8 +592,9 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._base_context_cache is None:
                 # First call — synchronous fetch
                 try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                    ctx = self._manager.get_prefetch_context(self._session_key, query)
+                    formatted = self._format_first_turn_context(ctx) if ctx else ""
+                    self._base_context_cache = formatted
                     self._last_context_turn = self._turn_count
                 except Exception as e:
                     logger.debug("Honcho base context fetch failed: %s", e)
@@ -598,6 +611,7 @@ class HonchoMemoryProvider(MemoryProvider):
                         self._base_context_cache = formatted
                     base_context = formatted
 
+        base_context = self._filter_context_by_query(base_context, query)
         if base_context:
             parts.append(base_context)
 
@@ -608,11 +622,11 @@ class HonchoMemoryProvider(MemoryProvider):
         # On timeout we let the thread keep running and write its result into
         # _prefetch_result under the lock, so the next turn picks it up.
         #
-        # Skip if the session-start prewarm already filled _prefetch_result —
+        # Skip if a background prefetch already filled _prefetch_result —
         # firing another .chat() would be duplicate work.
         with self._prefetch_lock:
-            _prewarm_landed = bool(self._prefetch_result)
-        if _prewarm_landed and self._last_dialectic_turn == -999:
+            _pending_result_landed = bool(self._prefetch_result)
+        if _pending_result_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
         if self._last_dialectic_turn == -999 and query:
@@ -887,21 +901,37 @@ class HonchoMemoryProvider(MemoryProvider):
             return self._apply_reasoning_heuristic(base, query)
         return mapping
 
-    def _build_dialectic_prompt(self, pass_idx: int, prior_results: list[str], is_cold: bool) -> str:
+    def _build_dialectic_prompt(
+        self,
+        pass_idx: int,
+        prior_results: list[str],
+        is_cold: bool,
+        query: str = "",
+    ) -> str:
         """Build the prompt for a given dialectic pass.
 
         Pass 0: cold start (general user query) or warm (session-scoped).
         Pass 1: self-audit / targeted synthesis against gaps from pass 0.
         Pass 2: reconciliation / contradiction check across prior passes.
         """
+        query_block = ""
+        if query and query.strip():
+            query_block = (
+                "Current user request:\n"
+                f"{query.strip()}\n\n"
+                "Return only memory that is clearly relevant to this request. "
+                "If no recalled fact is clearly relevant, return an empty string.\n\n"
+            )
         if pass_idx == 0:
             if is_cold:
                 return (
+                    query_block +
                     "Who is this person? What are their preferences, goals, "
                     "and working style? Focus on facts that would help an AI "
-                    "assistant be immediately useful."
+                    "assistant be immediately useful for the current request."
                 )
             return (
+                query_block +
                 "Given what's been discussed in this session so far, what "
                 "context about this user is most relevant to the current "
                 "conversation? Prioritize active context over biographical facts."
@@ -962,14 +992,14 @@ class HonchoMemoryProvider(MemoryProvider):
 
         for i in range(self._dialectic_depth):
             if i == 0:
-                prompt = self._build_dialectic_prompt(0, results, is_cold)
+                prompt = self._build_dialectic_prompt(0, results, is_cold, query)
             else:
                 # Skip further passes if prior pass delivered strong signal
                 if results and self._signal_sufficient(results[-1]):
                     logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
                                  self._dialectic_depth, i)
                     break
-                prompt = self._build_dialectic_prompt(i, results, is_cold)
+                prompt = self._build_dialectic_prompt(i, results, is_cold, query)
 
             level = self._resolve_pass_level(i, query=query)
             logger.debug("Honcho dialectic depth %d: pass %d, level=%s, cold=%s",

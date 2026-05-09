@@ -105,6 +105,7 @@ class TestFromGlobalConfig:
             "enabled": True,
             "saveMessages": False,
             "contextTokens": 2000,
+            "autoInjectSessionSummary": True,
             "sessionStrategy": "per-project",
             "sessionPeerPrefix": True,
             "sessions": {"/home/user/proj": "my-session"},
@@ -127,8 +128,16 @@ class TestFromGlobalConfig:
         assert config.peer_name == "alice"
         assert config.enabled is True
         assert config.save_messages is False
+        assert config.auto_inject_session_summary is True
         assert config.session_strategy == "per-project"
         assert config.session_peer_prefix is True
+
+    def test_session_summary_auto_injection_defaults_off(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({"apiKey": "key"}))
+
+        config = HonchoClientConfig.from_global_config(config_path=config_file)
+        assert config.auto_inject_session_summary is False
 
     def test_host_block_overrides_root(self, tmp_path):
         config_file = tmp_path / "config.json"

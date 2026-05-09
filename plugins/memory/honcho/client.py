@@ -298,6 +298,10 @@ class HonchoClientConfig:
     # "context" — auto-injected context only, Honcho tools removed
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
+    # Session summaries are broad, cumulative Honcho artifacts. Keep them out
+    # of automatic prompt injection by default; operators can opt in when they
+    # intentionally want summary-first behavior.
+    auto_inject_session_summary: bool = False
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
@@ -512,6 +516,11 @@ class HonchoClientConfig:
                 host_block.get("recallMode")
                 or raw.get("recallMode")
                 or "hybrid"
+            ),
+            auto_inject_session_summary=_resolve_bool(
+                host_block.get("autoInjectSessionSummary"),
+                raw.get("autoInjectSessionSummary"),
+                default=False,
             ),
             init_on_session_start=_resolve_bool(
                 host_block.get("initOnSessionStart"),
