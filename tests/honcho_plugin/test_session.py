@@ -1066,6 +1066,47 @@ class TestQueryFilteredAutoInjection:
         assert "Nadia assistant" in result
         assert "Supertonic" not in result
 
+    def test_short_casual_honcho_turn_does_not_auto_inject(self):
+        assert not HonchoMemoryProvider._should_auto_inject_for_query(
+            "we're scaring honcho away"
+        )
+
+    def test_short_task_turn_can_auto_inject(self):
+        assert HonchoMemoryProvider._should_auto_inject_for_query("check honcho logs")
+
+    def test_explicit_memory_question_can_auto_inject(self):
+        assert HonchoMemoryProvider._should_auto_inject_for_query("what's my name?")
+
+    def test_prefetch_skips_short_casual_honcho_turn(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._manager = MagicMock()
+        provider._session_key = "test-query-filtered"
+        provider._turn_count = 2
+        provider._last_dialectic_turn = 0
+        provider._base_context_cache = (
+            "## User Representation\n"
+            "[2026-05-04] gismar uses Honcho as a local memory system."
+        )
+
+        assert provider.prefetch("we're scaring honcho away") == ""
+        provider._manager.get_prefetch_context.assert_not_called()
+        provider._manager.dialectic_query.assert_not_called()
+
+    def test_queue_prefetch_skips_short_casual_honcho_turn(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._manager = MagicMock()
+        provider._session_key = "test-query-filtered"
+        provider._turn_count = 2
+        provider._last_context_turn = -999
+        provider._last_dialectic_turn = -999
+
+        provider.queue_prefetch("we're scaring honcho away")
+
+        provider._manager.prefetch_context.assert_not_called()
+        provider._manager.dialectic_query.assert_not_called()
+
 
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""
@@ -1419,12 +1460,12 @@ class TestSessionStartDialecticPrewarm:
         p._base_context_cache = ""
         p._turn_count = 1
 
-        result = p.prefetch("hello world")
+        result = p.prefetch("check honcho logs")
         assert "query synthesis" in result
         assert p._manager.dialectic_query.call_count == 1
         _, prompt = p._manager.dialectic_query.call_args.args[:2]
         assert "Current user request" in prompt
-        assert "hello world" in prompt
+        assert "check honcho logs" in prompt
 
     def test_turn1_falls_back_to_sync_when_prewarm_missing(self):
         """If the dialectic returns nothing, turn 1 returns only base context."""
@@ -1438,7 +1479,7 @@ class TestSessionStartDialecticPrewarm:
         p._base_context_cache = ""
         p._turn_count = 1
 
-        result = p.prefetch("hello world")
+        result = p.prefetch("check honcho logs")
         assert result == ""
         assert p._manager.dialectic_query.call_count == 1
 
@@ -1658,11 +1699,11 @@ class TestDialecticLifecycleSmoke:
         assert mgr.dialectic_query.call_count == 0
 
         # ---- turn 1: query-filtered first dialectic ----
-        provider.on_turn_start(1, "hey")
-        inject1 = provider.prefetch("hey")
+        provider.on_turn_start(1, "check hermes status")
+        inject1 = provider.prefetch("check hermes status")
         assert "turn1" in inject1, "turn 1 must surface query-filtered dialectic"
-        provider.sync_turn("hey", "hi there")
-        provider.queue_prefetch("hey")  # cadence gate: (1-1)<3 → skip
+        provider.sync_turn("check hermes status", "hi there")
+        provider.queue_prefetch("check hermes status")  # cadence gate: (1-1)<3 → skip
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 1, \
             "turn 1 plus immediate queue should only fire one dialectic call"
@@ -1704,16 +1745,16 @@ class TestDialecticLifecycleSmoke:
         assert mgr.dialectic_query.call_count == 2, "turns 5–6 blocked by cadence window"
 
         # ---- turn 7: fires but silent failure (empty dialectic) ----
-        provider.on_turn_start(7, "and then what")
-        provider.queue_prefetch("and then what")  # (7-4)≥3 → fires
+        provider.on_turn_start(7, "what happened next")
+        provider.queue_prefetch("what happened next")  # (7-4)≥3 → fires
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 3, "turn 7 fires"
         assert provider._last_dialectic_turn == 4, \
             "silent failure must NOT burn the cadence window"
 
         # ---- turn 8: retries because cadence didn't advance ----
-        provider.on_turn_start(8, "try again")
-        provider.queue_prefetch("try again")  # (8-4)≥3 → fires again
+        provider.on_turn_start(8, "explain again")
+        provider.queue_prefetch("explain again")  # (8-4)≥3 → fires again
         self._await_thread(provider)
         assert mgr.dialectic_query.call_count == 4, \
             "turn 8 retries because turn 7's empty result didn't advance cadence"

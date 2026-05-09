@@ -506,6 +506,33 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return "\n\n".join(kept_sections)
 
+    _TASK_INTENT_RE = re.compile(
+        r"\b(can you|please|check|compare|explain|fix|make|add|update|remove|"
+        r"find|look up|tell me|show|summarize|inspect|debug|diagnose|verify|"
+        r"list|review|commit|push)\b|^\s*(what|why|how|where|which|who)\b",
+        re.IGNORECASE,
+    )
+    _MEMORY_INTENT_RE = re.compile(
+        r"\b(remember|recall|memory|memories|previous|earlier|last time|"
+        r"before|history)\b|\bwhat(?:'s| is) my\b|\bwho am i\b",
+        re.IGNORECASE,
+    )
+    _CASUAL_AUTO_INJECT_CHAR_LIMIT = 40
+
+    @classmethod
+    def _should_auto_inject_for_query(cls, query: str) -> bool:
+        """Return whether this turn has enough signal to auto-inject memory."""
+        clean = (query or "").strip()
+        if cls._is_trivial_prompt(clean):
+            return False
+        if not cls._relevance_terms(clean):
+            return False
+        if cls._MEMORY_INTENT_RE.search(clean):
+            return True
+        if len(clean) < cls._CASUAL_AUTO_INJECT_CHAR_LIMIT:
+            return bool(cls._TASK_INTENT_RE.search(clean))
+        return True
+
     def system_prompt_block(self) -> str:
         """Return system prompt text, adapted by recall_mode.
 
@@ -581,6 +608,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Trivial prompts ("ok", "yes", slash commands) carry no semantic signal.
         if self._is_trivial_prompt(query):
+            return ""
+        if not self._should_auto_inject_for_query(query):
             return ""
 
         parts = []
@@ -731,6 +760,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Trivial prompts don't warrant either a context refresh or a dialectic call.
         if self._is_trivial_prompt(query):
+            return
+        if not self._should_auto_inject_for_query(query):
             return
 
         # ----- Context refresh (base layer) — independent cadence -----
