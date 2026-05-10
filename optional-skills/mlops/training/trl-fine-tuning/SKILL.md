@@ -1,32 +1,16 @@
 ---
-title: "Fine Tuning With Trl — TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF"
-sidebar_label: "Fine Tuning With Trl"
-description: "TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF"
+name: fine-tuning-with-trl
+description: "TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF."
+version: 1.0.0
+author: Orchestra Research
+license: MIT
+dependencies: [trl, transformers, datasets, peft, accelerate, torch]
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [Post-Training, TRL, Reinforcement Learning, Fine-Tuning, SFT, DPO, PPO, GRPO, RLHF, Preference Alignment, HuggingFace]
+
 ---
-
-{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
-
-# Fine Tuning With Trl
-
-TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF.
-
-## Skill metadata
-
-| | |
-|---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/training/trl-fine-tuning` |
-| Version | `1.0.0` |
-| Author | Orchestra Research |
-| License | MIT |
-| Dependencies | `trl`, `transformers`, `datasets`, `peft`, `accelerate`, `torch` |
-| Tags | `Post-Training`, `TRL`, `Reinforcement Learning`, `Fine-Tuning`, `SFT`, `DPO`, `PPO`, `GRPO`, `RLHF`, `Preference Alignment`, `HuggingFace` |
-
-## Reference: full SKILL.md
-
-:::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
-:::
 
 # TRL - Transformer Reinforcement Learning
 
@@ -269,7 +253,7 @@ trl dpo \
 
 Train with reinforcement learning using minimal memory.
 
-For in-depth GRPO guidance — reward function design, critical training insights (loss behavior, mode collapse, tuning), and advanced multi-stage patterns — see **[references/grpo-training.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/grpo-training.md)**. A production-ready training script is in **[templates/basic_grpo_training.py](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/templates/basic_grpo_training.py)**.
+For in-depth GRPO guidance — reward function design, critical training insights (loss behavior, mode collapse, tuning), and advanced multi-stage patterns — see **[references/grpo-training.md](references/grpo-training.md)**. A production-ready training script is in **[templates/basic_grpo_training.py](templates/basic_grpo_training.py)**.
 
 Copy this checklist:
 
@@ -439,15 +423,15 @@ config = PPOConfig(
 
 ## Advanced topics
 
-**SFT training guide**: See [references/sft-training.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/sft-training.md) for dataset formats, chat templates, packing strategies, and multi-GPU training.
+**SFT training guide**: See [references/sft-training.md](references/sft-training.md) for dataset formats, chat templates, packing strategies, and multi-GPU training.
 
-**DPO variants**: See [references/dpo-variants.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/dpo-variants.md) for IPO, cDPO, RPO, and other DPO loss functions with recommended hyperparameters.
+**DPO variants**: See [references/dpo-variants.md](references/dpo-variants.md) for IPO, cDPO, RPO, and other DPO loss functions with recommended hyperparameters.
 
-**Reward modeling**: See [references/reward-modeling.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/reward-modeling.md) for outcome vs process rewards, Bradley-Terry loss, and reward model evaluation.
+**Reward modeling**: See [references/reward-modeling.md](references/reward-modeling.md) for outcome vs process rewards, Bradley-Terry loss, and reward model evaluation.
 
-**Online RL methods**: See [references/online-rl.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/online-rl.md) for PPO, GRPO, RLOO, and OnlineDPO with detailed configurations.
+**Online RL methods**: See [references/online-rl.md](references/online-rl.md) for PPO, GRPO, RLOO, and OnlineDPO with detailed configurations.
 
-**GRPO deep dive**: See [references/grpo-training.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/references/grpo-training.md) for expert-level GRPO patterns — reward function design philosophy, training insights (why loss increases, mode collapse detection), hyperparameter tuning, multi-stage training, and troubleshooting. Production-ready template in [templates/basic_grpo_training.py](https://github.com/NousResearch/hermes-agent/blob/main/skills/mlops/training/trl-fine-tuning/templates/basic_grpo_training.py).
+**GRPO deep dive**: See [references/grpo-training.md](references/grpo-training.md) for expert-level GRPO patterns — reward function design philosophy, training insights (why loss increases, mode collapse detection), hyperparameter tuning, multi-stage training, and troubleshooting. Production-ready template in [templates/basic_grpo_training.py](templates/basic_grpo_training.py).
 
 ## Hardware requirements
 
@@ -474,3 +458,6 @@ config = PPOConfig(
   - "Direct Preference Optimization: Your Language Model is Secretly a Reward Model" (DPO, 2023)
   - "Group Relative Policy Optimization" (GRPO, 2024)
 - Examples: https://github.com/huggingface/trl/tree/main/examples/scripts
+
+
+

@@ -1,15 +1,33 @@
 ---
-name: unsloth
-description: "Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM."
-version: 1.0.0
-author: Orchestra Research
-license: MIT
-dependencies: [unsloth, torch, transformers, trl, datasets, peft]
-metadata:
-  hermes:
-    tags: [Fine-Tuning, Unsloth, Fast Training, LoRA, QLoRA, Memory-Efficient, Optimization, Llama, Mistral, Gemma, Qwen]
-
+title: "Unsloth — Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM"
+sidebar_label: "Unsloth"
+description: "Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Unsloth
+
+Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Optional — install with `hermes skills install official/mlops/unsloth` |
+| Path | `optional-skills/mlops/training/unsloth` |
+| Version | `1.0.0` |
+| Author | Orchestra Research |
+| License | MIT |
+| Dependencies | `unsloth`, `torch`, `transformers`, `trl`, `datasets`, `peft` |
+| Platforms | linux, macos |
+| Tags | `Fine-Tuning`, `Unsloth`, `Fast Training`, `LoRA`, `QLoRA`, `Memory-Efficient`, `Optimization`, `Llama`, `Mistral`, `Gemma`, `Qwen` |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # Unsloth Skill
 
@@ -78,6 +96,3 @@ To refresh this skill with updated documentation:
 2. The skill will be rebuilt with the latest information
 
 <!-- Trigger re-upload 1763621536 -->
-
-
-
