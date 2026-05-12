@@ -1,0 +1,6 @@
+name: supertonic
+version: 1.0.0
+description: "Supertonic local TTS backend. Generates WAV speech through an external Python environment with the supertonic package."
+author: Mara / Hermes Agent
+kind: backend
+requires_env: []

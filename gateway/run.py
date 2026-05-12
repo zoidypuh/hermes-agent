@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -51,7 +52,7 @@ from typing import Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, get_env_value
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -9071,6 +9072,8 @@ class GatewayRunner:
             )
         elif args in ("channel", "join"):
             return await self._handle_voice_channel_join(event)
+        elif args.startswith("join "):
+            return await self._handle_voice_channel_join(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
@@ -9122,11 +9125,22 @@ class GatewayRunner:
         if not guild_id:
             return "This command only works in a Discord server."
 
-        voice_channel = await adapter.get_user_voice_channel(
-            guild_id, event.source.user_id
-        )
+        args = event.get_command_args().strip()
+        channel_id_match = re.search(r"\b(\d{15,25})\b", args)
+        voice_channel = None
+        if channel_id_match and hasattr(adapter, "_client"):
+            voice_channel = adapter._client.get_channel(int(channel_id_match.group(1)))
+            if voice_channel is None:
+                try:
+                    voice_channel = await adapter._client.fetch_channel(int(channel_id_match.group(1)))
+                except Exception:
+                    voice_channel = None
+        if voice_channel is None:
+            voice_channel = await adapter.get_user_voice_channel(
+                guild_id, event.source.user_id
+            )
         if not voice_channel:
-            return "You need to be in a voice channel first."
+            return "You need to be in a voice channel first, or pass a voice channel ID."
 
         # Wire callbacks BEFORE join so voice input arriving immediately
         # after connection is not lost.
@@ -9237,13 +9251,53 @@ class GatewayRunner:
         recent_store[key] = recent[-5:]
         return False
 
+    async def _relay_voice_transcript_to_tmux(
+        self, guild_id: int, user_id: int, transcript: str, text_channel_id: int
+    ) -> bool:
+        """Optionally relay Discord voice STT text into a tmux pane.
+
+        This is a deliberately thin bridge for Gis's Lola voice relay: Discord
+        voice audio -> configured STT provider -> transcript text pasted into
+        the currently running Mara tmux session. It bypasses agent/TTS handling.
+        """
+        target = (get_env_value("HERMES_DISCORD_VOICE_RELAY_TMUX_TARGET") or "").strip()
+        if not target:
+            return False
+
+        prefix = (get_env_value("HERMES_DISCORD_VOICE_RELAY_PREFIX") or "").strip()
+        message = f"{prefix}{transcript}" if prefix else transcript
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", target, message, "C-m"],
+                check=True,
+                timeout=5,
+            )
+            logger.info(
+                "Relayed voice transcript to tmux target %s (guild=%s user=%s)",
+                target,
+                guild_id,
+                user_id,
+            )
+            if (get_env_value("HERMES_DISCORD_VOICE_RELAY_CONFIRM") or "1").lower() not in {"0", "false", "no", "off"}:
+                adapter = self.adapters.get(Platform.DISCORD)
+                channel = getattr(adapter, "_client", None).get_channel(text_channel_id) if adapter else None
+                if channel:
+                    safe_text = transcript[:1800].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                    await channel.send(f"**[Voice → Mara tmux]** <@{user_id}>: {safe_text}")
+            return True
+        except Exception as e:
+            logger.warning("Voice tmux relay failed for target %r: %s", target, e, exc_info=True)
+            return False
+
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str
     ):
         """Handle transcribed voice from a user in a voice channel.
 
         Creates a synthetic MessageEvent and processes it through the
-        adapter's full message pipeline (session, typing, agent, TTS reply).
+        adapter's full message pipeline (session, typing, agent, TTS reply),
+        unless HERMES_DISCORD_VOICE_RELAY_TMUX_TARGET is configured, in which
+        case the transcript is relayed to tmux instead.
         """
         adapter = self.adapters.get(Platform.DISCORD)
         if not adapter:
@@ -9282,6 +9336,13 @@ class GatewayRunner:
                 transcript[:100],
             )
             return
+
+        if (get_env_value("HERMES_DISCORD_VOICE_RELAY_TMUX_TARGET") or "").strip():
+            relayed = await self._relay_voice_transcript_to_tmux(
+                guild_id, user_id, transcript, int(text_ch_id)
+            )
+            if relayed:
+                return
 
         # Show transcript in text channel (after auth, with mention sanitization)
         try:
