@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -11,6 +11,8 @@ Provides speech-to-text transcription with six providers:
   - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
+  - **parakeet** — local NVIDIA Parakeet CLI at
+    ``/home/gismar/local-stt/parakeet``, no API key needed.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -26,6 +28,7 @@ Usage::
         print(result["transcript"])
 """
 
+import json
 import logging
 import os
 import shlex
@@ -87,6 +90,9 @@ DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest"
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+DEFAULT_PARAKEET_HOME = Path("/home/gismar/local-stt/parakeet")
+DEFAULT_PARAKEET_PYTHON = DEFAULT_PARAKEET_HOME / ".venv" / "bin" / "python"
+DEFAULT_PARAKEET_SCRIPT = DEFAULT_PARAKEET_HOME / "transcribe.py"
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -170,6 +176,24 @@ def _get_local_command_template() -> Optional[str]:
 
 def _has_local_command() -> bool:
     return _get_local_command_template() is not None
+
+
+def _parakeet_paths(stt_config: Optional[dict] = None) -> tuple[Path, Path]:
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    parakeet_cfg = stt_config.get("parakeet", {}) if isinstance(stt_config, dict) else {}
+    python_path = Path(parakeet_cfg.get("python") or DEFAULT_PARAKEET_PYTHON).expanduser()
+    script_path = Path(parakeet_cfg.get("script") or DEFAULT_PARAKEET_SCRIPT).expanduser()
+    return python_path, script_path
+
+
+def _has_parakeet(stt_config: Optional[dict] = None) -> bool:
+    python_path, script_path = _parakeet_paths(stt_config)
+    return (
+        python_path.is_file()
+        and os.access(python_path, os.X_OK)
+        and script_path.is_file()
+    )
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:
@@ -265,6 +289,18 @@ def _get_provider(stt_config: dict) -> str:
                 return "xai"
             logger.warning(
                 "STT provider 'xai' configured but XAI_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "parakeet":
+            if _has_parakeet(stt_config):
+                return "parakeet"
+            python_path, script_path = _parakeet_paths(stt_config)
+            logger.warning(
+                "STT provider 'parakeet' configured but unavailable "
+                "(python=%s, script=%s)",
+                python_path,
+                script_path,
             )
             return "none"
 
@@ -533,6 +569,95 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
     except Exception as e:
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Provider: parakeet (local NVIDIA Parakeet CLI)
+# ---------------------------------------------------------------------------
+
+
+def _extract_parakeet_transcript(payload: Any, file_path: str) -> str:
+    if not isinstance(payload, dict):
+        return str(payload).strip()
+
+    results = payload.get("results")
+    if isinstance(results, list) and results:
+        resolved_path = str(Path(file_path).expanduser().resolve())
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            if item.get("path") == resolved_path and isinstance(item.get("text"), str):
+                return item["text"].strip()
+        first = results[0]
+        if isinstance(first, dict) and isinstance(first.get("text"), str):
+            return first["text"].strip()
+
+    text = payload.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _parse_parakeet_json(stdout: str) -> Dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(stdout):
+        if char != "{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(stdout[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    raise json.JSONDecodeError("no JSON object found in Parakeet output", stdout, 0)
+
+
+def _transcribe_parakeet(file_path: str) -> Dict[str, Any]:
+    """Run the local NVIDIA Parakeet CLI and parse its JSON transcript."""
+    stt_config = _load_stt_config()
+    python_path, script_path = _parakeet_paths(stt_config)
+
+    if not _has_parakeet(stt_config):
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"Parakeet STT unavailable (python={python_path}, script={script_path})",
+        }
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-parakeet-stt-") as work_dir:
+            prepared_input, prep_error = _prepare_local_audio(file_path, work_dir)
+            if prep_error:
+                return {"success": False, "transcript": "", "error": prep_error}
+
+            command = [str(python_path), str(script_path), prepared_input, "--pretty"]
+            proc = subprocess.run(command, check=True, capture_output=True, text=True)
+            payload = _parse_parakeet_json(proc.stdout)
+            transcript_text = _extract_parakeet_transcript(payload, prepared_input)
+
+            if not transcript_text:
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": "Parakeet STT returned empty transcript",
+                }
+
+            logger.info(
+                "Transcribed %s via local Parakeet STT (%d chars)",
+                Path(file_path).name,
+                len(transcript_text),
+            )
+            return {"success": True, "transcript": transcript_text, "provider": "parakeet"}
+
+    except json.JSONDecodeError as e:
+        return {"success": False, "transcript": "", "error": f"Parakeet STT returned invalid JSON: {e}"}
+    except subprocess.CalledProcessError as e:
+        details = e.stderr.strip() or e.stdout.strip() or str(e)
+        logger.error("Parakeet STT failed for %s: %s", file_path, details)
+        return {"success": False, "transcript": "", "error": f"Parakeet STT failed: {details}"}
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Unexpected error during Parakeet STT: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Parakeet STT failed: {e}"}
 
 # ---------------------------------------------------------------------------
 # Provider: groq (Whisper API — free tier)
@@ -835,6 +960,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         )
         return _transcribe_local_command(file_path, model_name)
 
+    if provider == "parakeet":
+        return _transcribe_parakeet(file_path)
+
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
         return _transcribe_groq(file_path, model_name)
@@ -861,6 +989,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
+            "set stt.provider: parakeet for the local Parakeet runtime, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
             "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."

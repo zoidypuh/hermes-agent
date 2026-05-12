@@ -391,9 +391,12 @@ voice:
 
 # Speech-to-Text
 stt:
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  provider: "local"                  # "local" (free) | "local_command" | "parakeet" | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
+  parakeet:
+    python: "/home/gismar/local-stt/parakeet/.venv/bin/python"
+    script: "/home/gismar/local-stt/parakeet/transcribe.py"
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
@@ -445,12 +448,13 @@ DISCORD_ALLOWED_USERS=...
 | **Local** | `base` | Fast (depends on CPU/GPU) | Good | Free | No |
 | **Local** | `small` | Medium | Better | Free | No |
 | **Local** | `large-v3` | Slow | Best | Free | No |
+| **Parakeet** | `nvidia/parakeet-tdt-0.6b-v3` | Fast on CUDA | Great | Free | No |
 | **Groq** | `whisper-large-v3-turbo` | Very fast (~0.5s) | Good | Free tier | Yes |
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **openai**
+Provider priority (automatic fallback): **local** > **groq** > **openai**. Parakeet is explicit-only: set `stt.provider: parakeet` to use the local runtime at `/home/gismar/local-stt/parakeet`.
 
 ### TTS Provider Comparison
 

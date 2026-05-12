@@ -967,10 +967,14 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "local_command" | "parakeet" | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "xai"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+        },
+        "parakeet": {
+            "python": "/home/gismar/local-stt/parakeet/.venv/bin/python",
+            "script": "/home/gismar/local-stt/parakeet/transcribe.py",
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe

@@ -782,14 +782,17 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+# Providers: local (free, faster-whisper) | local_command | parakeet | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe) | xai
+# Set the corresponding API key in .env for cloud providers: GROQ_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY, or XAI_API_KEY.
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+  parakeet:
+    python: "/home/gismar/local-stt/parakeet/.venv/bin/python"
+    script: "/home/gismar/local-stt/parakeet/transcribe.py"
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:

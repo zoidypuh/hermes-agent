@@ -7,6 +7,7 @@ consults ``get_env_value()`` and the provider auto-detect + explicit
 selection gate (``_get_provider``) do the same.
 """
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,6 +87,18 @@ class TestProviderSelectionGate:
              patch("hermes_cli.config.load_env",
                    return_value={"XAI_API_KEY": "dotenv-secret"}):
             assert tt._get_provider({"enabled": True, "provider": "xai"}) == "xai"
+
+    def test_explicit_parakeet_uses_local_installation_probe(self):
+        from tools import transcription_tools as tt
+
+        with patch.object(tt, "_has_parakeet", return_value=True):
+            assert tt._get_provider({"enabled": True, "provider": "parakeet"}) == "parakeet"
+
+    def test_explicit_parakeet_unavailable_returns_none(self):
+        from tools import transcription_tools as tt
+
+        with patch.object(tt, "_has_parakeet", return_value=False):
+            assert tt._get_provider({"enabled": True, "provider": "parakeet"}) == "none"
 
     def test_auto_detect_sees_dotenv_groq(self):
         """No local backend, no explicit provider — auto-detect should fall
@@ -192,6 +205,48 @@ class TestTranscribeCallSitesReadDotenv:
 
         assert result["success"] is True
         assert captured["headers"]["Authorization"] == "Bearer xai-dotenv-key"
+
+
+class TestParakeetProvider:
+    def test_transcribe_audio_invokes_local_parakeet_cli(self, tmp_path):
+        from tools import transcription_tools as tt
+
+        audio_path = tmp_path / "sample.wav"
+        audio_path.write_bytes(b"RIFF....WAVEfmt ")
+        stdout = "[NeMo I] noisy startup log\n" + json.dumps({
+            "results": [{"path": str(audio_path.resolve()), "text": "hello from parakeet"}]
+        })
+        proc = MagicMock(stdout=stdout)
+
+        with patch.object(tt, "_load_stt_config", return_value={
+                "enabled": True,
+                "provider": "parakeet",
+                "parakeet": {
+                    "python": "/home/gismar/local-stt/parakeet/.venv/bin/python",
+                    "script": "/home/gismar/local-stt/parakeet/transcribe.py",
+                },
+             }), \
+             patch.object(tt, "_has_parakeet", return_value=True), \
+             patch.object(tt, "_prepare_local_audio", return_value=(str(audio_path), None)), \
+             patch.object(tt.subprocess, "run", return_value=proc) as run_mock:
+            result = tt.transcribe_audio(str(audio_path))
+
+        assert result == {
+            "success": True,
+            "transcript": "hello from parakeet",
+            "provider": "parakeet",
+        }
+        run_mock.assert_called_once_with(
+            [
+                "/home/gismar/local-stt/parakeet/.venv/bin/python",
+                "/home/gismar/local-stt/parakeet/transcribe.py",
+                str(audio_path),
+                "--pretty",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 class TestEndToEndRegressionGuard:

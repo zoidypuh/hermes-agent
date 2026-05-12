@@ -304,6 +304,7 @@ Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automat
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------| 
 | **Local Whisper** (default) | Good | Free | None needed |
+| **Local Parakeet** | Great | Free | None needed |
 | **Groq Whisper API** | Good–Best | Free tier | `GROQ_API_KEY` |
 | **OpenAI Whisper API** | Good–Best | Paid | `VOICE_TOOLS_OPENAI_KEY` or `OPENAI_API_KEY` |
 
@@ -316,9 +317,12 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"           # "local" | "local_command" | "parakeet" | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"             # tiny, base, small, medium, large-v3
+  parakeet:
+    python: "/home/gismar/local-stt/parakeet/.venv/bin/python"
+    script: "/home/gismar/local-stt/parakeet/transcribe.py"
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
   mistral:
@@ -338,6 +342,8 @@ stt:
 | `small` | ~500 MB | Medium | Better |
 | `medium` | ~1.5 GB | Slower | Great |
 | `large-v3` | ~3 GB | Slowest | Best |
+
+**Local Parakeet** — Runs the local NVIDIA Parakeet CLI at `/home/gismar/local-stt/parakeet` with no API key. Select it explicitly with `stt.provider: parakeet`; Hermes calls `/home/gismar/local-stt/parakeet/.venv/bin/python /home/gismar/local-stt/parakeet/transcribe.py <audio.wav> --pretty` and reads the returned JSON transcript.
 
 **Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option.
 
@@ -371,6 +377,7 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 If your configured provider isn't available, Hermes automatically falls back:
 - **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
+- **Parakeet** → Used only when explicitly selected with `stt.provider: parakeet`
 - **Groq key not set** → Falls back to local transcription, then OpenAI
 - **OpenAI key not set** → Falls back to local transcription, then Groq
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
