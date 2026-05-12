@@ -9074,6 +9074,8 @@ class GatewayRunner:
             return await self._handle_voice_channel_join(event)
         elif args.startswith("join "):
             return await self._handle_voice_channel_join(event)
+        elif args.startswith(("say ", "speak ")):
+            return await self._handle_voice_channel_say(event)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":
@@ -9176,6 +9178,28 @@ class GatewayRunner:
         # Join failed — clear callback
         adapter._voice_input_callback = None
         return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+
+    async def _handle_voice_channel_say(self, event: MessageEvent) -> str:
+        """Speak user-provided text into the connected Discord voice channel."""
+        adapter = self.adapters.get(event.source.platform)
+        guild_id = self._get_guild_id(event)
+        if not guild_id or not hasattr(adapter, "play_in_voice_channel"):
+            return "Voice channels are not supported on this platform."
+        raw_args = event.get_command_args().strip()
+        text = re.sub(r"^(say|speak)\s+", "", raw_args, flags=re.IGNORECASE).strip()
+        # Optional voice channel ID: /voice say 123456789012345678 hello
+        # It is used by _handle_voice_channel_join(event), but should not be spoken.
+        text = re.sub(r"^\d{15,25}\s+", "", text).strip()
+        if not text:
+            return "Usage: /voice say [voice_channel_id] <text>"
+
+        if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+            join_result = await self._handle_voice_channel_join(event)
+            if not hasattr(adapter, "is_in_voice_channel") or not adapter.is_in_voice_channel(guild_id):
+                return f"I'm not in a voice channel and auto-join failed: {join_result}"
+
+        await self._send_voice_reply(event, text)
+        return "Spoken in voice."
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""

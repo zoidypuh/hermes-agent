@@ -2960,7 +2960,10 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
+        @discord.app_commands.describe(
+            mode="Voice mode: join, channel, say, leave, on, tts, off, or status",
+            text="Text for say/speak, or a voice channel ID for join",
+        )
         @discord.app_commands.choices(mode=[
             # `join` and `channel` both route to _handle_voice_channel_join in
             # gateway/run.py — expose both in the slash UI so autocomplete
@@ -2968,14 +2971,17 @@ class DiscordAdapter(BasePlatformAdapter):
             # the command is typed as plain text.
             discord.app_commands.Choice(name="join — join your voice channel", value="join"),
             discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
+            discord.app_commands.Choice(name="say — speak text in the voice channel", value="say"),
+            discord.app_commands.Choice(name="speak — speak text in the voice channel", value="speak"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
             discord.app_commands.Choice(name="off — text only", value="off"),
             discord.app_commands.Choice(name="status — show current mode", value="status"),
         ])
-        async def slash_voice(interaction: discord.Interaction, mode: str = ""):
-            await self._run_simple_slash(interaction, f"/voice {mode}".strip())
+        async def slash_voice(interaction: discord.Interaction, mode: str = "", text: str = ""):
+            command = f"/voice {mode} {text}".strip()
+            await self._run_simple_slash(interaction, command)
 
         @tree.command(name="update", description="Update Hermes Agent to the latest version")
         async def slash_update(interaction: discord.Interaction):
