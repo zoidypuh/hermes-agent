@@ -1163,10 +1163,19 @@ def check_voice_requirements() -> Dict[str, Any]:
         details_parts.append("STT provider: OK (Groq)")
     elif stt_provider == "openai":
         details_parts.append("STT provider: OK (OpenAI)")
+    elif stt_provider == "local_command":
+        details_parts.append("STT provider: OK (local command)")
+    elif stt_provider == "mistral":
+        details_parts.append("STT provider: OK (Mistral)")
+    elif stt_provider == "xai":
+        details_parts.append("STT provider: OK (xAI)")
+    elif stt_provider == "parakeet":
+        details_parts.append("STT provider: OK (local Parakeet)")
     else:
         details_parts.append(
             "STT provider: MISSING (uv pip install faster-whisper — "
             "`pip install faster-whisper` also works if pip is on PATH, "
+            "set stt.provider: parakeet for the local Parakeet runtime, "
             "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"
         )
 

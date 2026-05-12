@@ -1338,9 +1338,12 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 
 ```yaml
 stt:
-  provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  provider: "local"            # "local" | "local_command" | "parakeet" | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"              # tiny, base, small, medium, large-v3
+  parakeet:
+    python: "/home/gismar/local-stt/parakeet/.venv/bin/python"
+    script: "/home/gismar/local-stt/parakeet/transcribe.py"
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # model: "whisper-1"         # Legacy fallback key still respected
@@ -1349,6 +1352,7 @@ stt:
 Provider behavior:
 
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
+- `parakeet` runs the local Parakeet CLI at `/home/gismar/local-stt/parakeet`.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
