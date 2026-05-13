@@ -2996,6 +2996,29 @@ def _(rid, params: dict) -> dict:
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
+    return _submit_prompt_text(rid, params, sid, text)
+
+
+@method("voice.ingest_transcript")
+def _(rid, params: dict) -> dict:
+    """Submit externally transcribed speech as the next user turn.
+
+    This is the text-side ingress for non-local voice clients: browser,
+    native tray app, or another relay can own capture, VAD, cleanup, and STT,
+    then hand Hermes the final transcript without requiring a microphone in
+    the TUI gateway process.
+    """
+    sid = params.get("session_id", "")
+    text = params.get("text", "")
+    if not isinstance(text, str):
+        return _err(rid, 4020, "voice transcript text must be a string")
+    text = text.strip()
+    if not text:
+        return _err(rid, 4021, "voice transcript text is empty")
+    return _submit_prompt_text(rid, params, sid, text)
+
+
+def _submit_prompt_text(rid, params: dict, sid: str, text: Any) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err

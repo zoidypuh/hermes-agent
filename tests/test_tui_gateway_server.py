@@ -2013,6 +2013,59 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
+def test_voice_ingest_transcript_submits_text_turn(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "voice.ingest_transcript",
+                "params": {"session_id": "sid", "text": "  spoken turn  "},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "streaming"
+    assert captured["prompt"] == "spoken turn"
+
+
+def test_voice_ingest_transcript_rejects_empty_text():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "voice.ingest_transcript",
+            "params": {"session_id": "sid", "text": "   "},
+        }
+    )
+
+    assert resp["error"]["code"] == 4021
+
+
 def test_prompt_submit_expands_context_refs(monkeypatch):
     captured = {}
 
