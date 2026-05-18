@@ -11,6 +11,7 @@ automatically when it approaches expiry.
 
 First-class adapter:
   - ``nous`` — Nous Portal (https://inference-api.nousresearch.com/v1)
+  - ``xai-oauth`` — xAI Grok OAuth (https://api.x.ai/v1)
 
 Future adapters can plug in by implementing ``UpstreamAdapter``.
 """

@@ -15,6 +15,7 @@ from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
 from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
+from hermes_cli.proxy.adapters.xai_oauth import XaiOAuthAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -22,8 +23,9 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # ---------------------------------------------------------------------------
 
 
-def test_registry_lists_nous():
+def test_registry_lists_supported_providers():
     assert "nous" in ADAPTERS
+    assert "xai-oauth" in ADAPTERS
 
 
 def test_registry_lists_xai():
@@ -34,6 +36,7 @@ def test_get_adapter_returns_instance():
     adapter = get_adapter("nous")
     assert isinstance(adapter, NousPortalAdapter)
     assert isinstance(adapter, UpstreamAdapter)
+    assert isinstance(get_adapter("xai-oauth"), XaiOAuthAdapter)
 
 
 def test_get_adapter_returns_xai_instance():
@@ -51,6 +54,77 @@ def test_get_adapter_case_insensitive():
 def test_get_adapter_unknown_provider_raises():
     with pytest.raises(ValueError, match="anthropic"):
         get_adapter("anthropic")  # not yet implemented
+
+
+# ---------------------------------------------------------------------------
+# XaiOAuthAdapter
+# ---------------------------------------------------------------------------
+
+
+def _write_xai_auth_store(hermes_home: Path, *, access_token: str = "access-tok",
+                          refresh_token: str = "refresh-tok") -> Path:
+    """Write xAI OAuth state into a hermetic HERMES_HOME."""
+    auth_path = hermes_home / "auth.json"
+    auth_path.write_text(json.dumps({
+        "version": 1,
+        "providers": {
+            "xai-oauth": {
+                "tokens": {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "token_type": "Bearer",
+                },
+                "last_refresh": "2026-05-14T00:00:00Z",
+                "auth_mode": "oauth_pkce",
+            },
+        },
+    }))
+    return auth_path
+
+
+def test_xai_adapter_metadata():
+    adapter = XaiOAuthAdapter()
+    assert adapter.name == "xai-oauth"
+    assert adapter.display_name == "xAI Grok OAuth"
+    assert "/chat/completions" in adapter.allowed_paths
+    assert "/completions" in adapter.allowed_paths
+    assert "/messages" in adapter.allowed_paths
+    assert "/responses" in adapter.allowed_paths
+    assert "/images/generations" in adapter.allowed_paths
+    assert "/models" in adapter.allowed_paths
+    assert adapter.is_path_allowed("/responses/resp_123")
+    assert adapter.is_path_allowed("/models/grok-4")
+    assert adapter.is_path_allowed("/language-models/grok-4")
+    assert not adapter.is_path_allowed("/files")
+    assert not adapter.is_path_allowed("/api-key")
+
+
+def test_xai_adapter_not_authenticated_when_no_auth_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert not XaiOAuthAdapter().is_authenticated()
+
+
+def test_xai_adapter_authenticated_with_tokens(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_xai_auth_store(tmp_path)
+    assert XaiOAuthAdapter().is_authenticated()
+
+
+def test_xai_adapter_get_credential_uses_runtime_resolver():
+    with patch(
+        "hermes_cli.proxy.adapters.xai_oauth.resolve_xai_oauth_runtime_credentials",
+        return_value={
+            "api_key": "xai-access-token",
+            "base_url": "https://api.x.ai/v1/",
+            "source": "hermes-auth-store",
+        },
+    ) as mock_resolve:
+        cred = XaiOAuthAdapter().get_credential()
+
+    mock_resolve.assert_called_once()
+    assert cred.bearer == "xai-access-token"
+    assert cred.base_url == "https://api.x.ai/v1"
+    assert cred.token_type == "Bearer"
 
 
 # ---------------------------------------------------------------------------
@@ -860,6 +934,8 @@ def test_cmd_proxy_status_runs(capsys, tmp_path, monkeypatch):
     out = capsys.readouterr().out
     assert "nous" in out
     assert "Nous Portal" in out
+    assert "xai-oauth" in out
+    assert "xAI Grok OAuth" in out
     assert "not logged in" in out
 
 

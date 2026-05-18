@@ -109,7 +109,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
 
-        if rel_path not in adapter.allowed_paths:
+        if not adapter.is_path_allowed(rel_path):
             allowed = ", ".join(sorted(adapter.allowed_paths))
             return _json_error(
                 404,
