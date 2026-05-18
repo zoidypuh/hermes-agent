@@ -9996,8 +9996,11 @@ def main():
     )
     proxy_start.add_argument(
         "--provider",
-        default="nous",
-        help="Upstream provider (default: nous). See `hermes proxy providers`.",
+        default=None,
+        help=(
+            "Upstream provider. Overrides config.yaml proxy.provider "
+            "(default: nous). See `hermes proxy providers`."
+        ),
     )
     proxy_start.add_argument(
         "--host",
