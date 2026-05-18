@@ -46,6 +46,7 @@ def test_plugin_engine_gets_context_length_on_init():
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=None),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -116,6 +117,7 @@ def test_plugin_engine_update_model_args():
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=None),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
         patch("agent.model_metadata.get_model_context_length", return_value=131_072),
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -138,4 +140,35 @@ def test_plugin_engine_update_model_args():
     assert kw["context_length"] == 131_072
     assert "model" in kw
     assert "provider" in kw
-    assert "api_mode" in kw
+    # Should NOT pass api_mode — the ABC doesn't accept it
+    assert "api_mode" not in kw
+
+
+def test_plugin_registered_engine_is_preferred_over_context_engine_loader():
+    """Slash-command engines and active compression must share one instance."""
+    plugin_engine = _StubEngine()
+    loader_engine = _StubEngine()
+
+    cfg = {"context": {"engine": "stub"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.plugins.get_plugin_context_engine", return_value=plugin_engine),
+        patch("plugins.context_engine.load_context_engine", return_value=loader_engine) as load_context_engine,
+        patch("agent.model_metadata.get_model_context_length", return_value=65_536),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.context_compressor is plugin_engine
+    load_context_engine.assert_not_called()

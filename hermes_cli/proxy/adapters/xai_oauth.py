@@ -31,6 +31,7 @@ _ALLOWED_PATHS: FrozenSet[str] = frozenset(
         "/models",
         "/responses",
         "/tokenize-text",
+        "/videos/generations",
     }
 )
 
@@ -41,6 +42,7 @@ _ALLOWED_PREFIXES: FrozenSet[str] = frozenset(
         "/language-models/",
         "/models/",
         "/responses/",
+        "/videos/",
     }
 )
 

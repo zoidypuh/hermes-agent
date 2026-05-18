@@ -369,18 +369,10 @@ def _run_review_in_thread(
             # creds, or credential-pool setups where the resolver can't
             # reconstruct auth from scratch -- producing the spurious
             # "No LLM provider configured" warning at end of turn.
-            _parent_runtime = agent._current_main_runtime()
-            _parent_api_mode = _parent_runtime.get("api_mode") or None
-            # The review fork needs to call agent-loop tools (memory,
-            # skill_manage). Those tools require Hermes' own dispatch,
-            # which the codex_app_server runtime bypasses entirely
-            # (it runs the turn inside codex's subprocess). So when
-            # the parent is on codex_app_server, downgrade the review
-            # fork to codex_responses — same auth/credentials, but
-            # talks to the OpenAI Responses API directly so Hermes
-            # owns the loop and the agent-loop tools dispatch.
-            if _parent_api_mode == "codex_app_server":
-                _parent_api_mode = "codex_responses"
+            _review_runtime, _review_uses_aux_runtime = agent._background_review_runtime(
+                agent._current_main_runtime()
+            )
+            _review_api_mode = _review_runtime.get("api_mode") or None
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
             # supermemory, etc.).  Without it, the fork's
@@ -400,18 +392,19 @@ def _run_review_in_thread(
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
-                model=agent.model,
+                model=_review_runtime.get("model") or agent.model,
                 max_iterations=16,
                 quiet_mode=True,
                 platform=agent.platform,
-                provider=agent.provider,
-                api_mode=_parent_api_mode,
-                base_url=_parent_runtime.get("base_url") or None,
-                api_key=_parent_runtime.get("api_key") or None,
+                provider=_review_runtime.get("provider") or agent.provider,
+                api_mode=_review_api_mode,
+                base_url=_review_runtime.get("base_url") or None,
+                api_key=_review_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                skip_context_files=_review_uses_aux_runtime,
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"
@@ -429,17 +422,13 @@ def _run_review_in_thread(
             # _vprint and leak past the stdout redirect (they go via
             # _print_fn/status_callback, which bypass sys.stdout).
             review_agent.suppress_status_output = True
-            # Inherit the parent's cached system prompt verbatim so
-            # the review fork's outbound HTTP request hits the same
-            # Anthropic/OpenRouter prefix cache the parent warmed.
-            # Without this, the fork rebuilds the system prompt from
-            # scratch (fresh _hermes_now() timestamp, fresh
-            # session_id, narrower toolset → different skills_prompt)
-            # and the byte-exact prefix-cache key misses. See
-            # issue #25322 and PR #17276 for the full analysis +
-            # measured impact (~26% end-to-end cost reduction on
-            # Sonnet 4.5).
-            review_agent._cached_system_prompt = agent._cached_system_prompt
+            # Inherit the parent's cached system prompt verbatim only when
+            # the review fork inherits the parent's runtime. A configured
+            # auxiliary runtime is meant to be cheap and small, so let it
+            # build its own reduced prompt with skip_context_files=True
+            # instead of replaying the main session's full prefix.
+            if not _review_uses_aux_runtime:
+                review_agent._cached_system_prompt = agent._cached_system_prompt
             # Defensive: pin session_start + session_id to the
             # parent's so any code path that re-renders parts of
             # the system prompt (compression, plugin hooks) still

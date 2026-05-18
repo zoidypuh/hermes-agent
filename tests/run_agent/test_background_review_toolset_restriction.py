@@ -85,6 +85,36 @@ def test_background_review_matches_parent_toolset_config():
     )
 
 
+def test_background_review_auxiliary_runtime_uses_small_prompt_path():
+    """Configured auxiliary review runtimes should not replay the parent prompt."""
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._background_review_runtime_config = {
+        "provider": "cliproxy",
+        "model": "gpt-5.4-mini",
+        "api_mode": "chat_completions",
+    }
+    captured = {}
+
+    def _capture_init(self, *args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capturing init args")
+
+    with patch.object(run_agent.AIAgent, "__init__", _capture_init), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    assert captured["provider"] == "cliproxy"
+    assert captured["model"] == "gpt-5.4-mini"
+    assert captured["api_mode"] == "chat_completions"
+    assert captured["skip_context_files"] is True
+
+
 def test_background_review_installs_thread_local_whitelist():
     """The review fork must install a memory/skills-only thread-local whitelist.
 

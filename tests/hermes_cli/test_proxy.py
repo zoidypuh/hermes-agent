@@ -91,8 +91,10 @@ def test_xai_adapter_metadata():
     assert "/messages" in adapter.allowed_paths
     assert "/responses" in adapter.allowed_paths
     assert "/images/generations" in adapter.allowed_paths
+    assert "/videos/generations" in adapter.allowed_paths
     assert "/models" in adapter.allowed_paths
     assert adapter.is_path_allowed("/responses/resp_123")
+    assert adapter.is_path_allowed("/videos/video_req_123")
     assert adapter.is_path_allowed("/models/grok-4")
     assert adapter.is_path_allowed("/language-models/grok-4")
     assert not adapter.is_path_allowed("/files")

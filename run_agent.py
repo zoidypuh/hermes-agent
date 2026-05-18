@@ -1030,6 +1030,46 @@ class AIAgent:
             "api_mode": getattr(self, "api_mode", "") or "",
         }
 
+    def _background_review_runtime(self, parent_runtime: Dict[str, str]) -> tuple[Dict[str, str], bool]:
+        """Resolve the runtime for background memory/skill review forks.
+
+        By default the fork inherits the parent runtime so existing users keep
+        provider credentials and prompt-cache behavior. When
+        ``auxiliary.background_review`` is configured, the fork uses that
+        smaller/cheaper runtime and skips the parent's cached system prompt.
+        """
+        runtime = dict(parent_runtime or {})
+        config = getattr(self, "_background_review_runtime_config", {}) or {}
+        if not isinstance(config, dict):
+            config = {}
+
+        def _str_value(key: str) -> str:
+            value = config.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        using_override = False
+
+        provider = _str_value("provider")
+        if provider and provider.lower() not in {"auto", "main"}:
+            runtime["provider"] = provider
+            using_override = True
+
+        for key in ("model", "base_url", "api_key"):
+            value = _str_value(key)
+            if value:
+                runtime[key] = value
+                using_override = True
+
+        api_mode = _str_value("api_mode")
+        if api_mode:
+            runtime["api_mode"] = api_mode
+            using_override = True
+
+        if not api_mode and runtime.get("api_mode") == "codex_app_server":
+            runtime["api_mode"] = "codex_responses"
+
+        return runtime, using_override
+
     def _check_compression_model_feasibility(self) -> None:
         """Forwarder — see ``agent.conversation_compression.check_compression_model_feasibility``."""
         from agent.conversation_compression import check_compression_model_feasibility
