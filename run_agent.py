@@ -2146,6 +2146,13 @@ class AIAgent:
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
         except Exception:
             pass
+        try:
+            _bg_review_cfg = cfg_get(_agent_cfg, "auxiliary", "background_review", default={})
+        except Exception:
+            _bg_review_cfg = {}
+        self._background_review_runtime_config = (
+            dict(_bg_review_cfg) if isinstance(_bg_review_cfg, dict) else {}
+        )
 
         # Tool-use enforcement config: "auto" (default — matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -2333,8 +2340,8 @@ class AIAgent:
 
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
-        # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
-        # 3. Check general plugin system (user-installed plugins)
+        # 2. Check general plugin system (user-installed plugins)
+        # 3. Check plugins/context_engine/<name>/ directory (repo-shipped)
         # 4. Fall back to built-in ContextCompressor
         _selected_engine = None
         _engine_name = "compressor"  # default
@@ -2345,22 +2352,24 @@ class AIAgent:
             pass
 
         if _engine_name != "compressor":
-            # Try loading from plugins/context_engine/<name>/
+            # Prefer the plugin-registered instance when present. Some engines
+            # also register operator commands; using a separate
+            # plugins/context_engine instance leaves those commands unbound.
             try:
-                from plugins.context_engine import load_context_engine
-                _selected_engine = load_context_engine(_engine_name)
-            except Exception as _ce_load_err:
-                logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
+                from hermes_cli.plugins import get_plugin_context_engine
+                _candidate = get_plugin_context_engine()
+                if _candidate and _candidate.name == _engine_name:
+                    _selected_engine = _candidate
+            except Exception as _plugin_ce_err:
+                logger.debug("Context engine load from plugin registry: %s", _plugin_ce_err)
 
-            # Try general plugin system as fallback
+            # Try loading from plugins/context_engine/<name>/.
             if _selected_engine is None:
                 try:
-                    from hermes_cli.plugins import get_plugin_context_engine
-                    _candidate = get_plugin_context_engine()
-                    if _candidate and _candidate.name == _engine_name:
-                        _selected_engine = _candidate
-                except Exception:
-                    pass
+                    from plugins.context_engine import load_context_engine
+                    _selected_engine = load_context_engine(_engine_name)
+                except Exception as _ce_load_err:
+                    logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
 
             if _selected_engine is None:
                 logger.warning(
@@ -3269,6 +3278,46 @@ class AIAgent:
             "api_key": getattr(self, "api_key", "") or "",
             "api_mode": getattr(self, "api_mode", "") or "",
         }
+
+    def _background_review_runtime(self, parent_runtime: Dict[str, str]) -> tuple[Dict[str, str], bool]:
+        """Resolve the runtime for background memory/skill review forks.
+
+        By default the fork inherits the parent runtime so existing users keep
+        provider credentials and prompt-cache behavior. When
+        ``auxiliary.background_review`` is configured, the fork uses that
+        smaller/cheaper runtime and skips the parent's cached system prompt.
+        """
+        runtime = dict(parent_runtime or {})
+        config = getattr(self, "_background_review_runtime_config", {}) or {}
+        if not isinstance(config, dict):
+            config = {}
+
+        def _str_value(key: str) -> str:
+            value = config.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        using_override = False
+
+        provider = _str_value("provider")
+        if provider and provider.lower() not in {"auto", "main"}:
+            runtime["provider"] = provider
+            using_override = True
+
+        for key in ("model", "base_url", "api_key"):
+            value = _str_value(key)
+            if value:
+                runtime[key] = value
+                using_override = True
+
+        api_mode = _str_value("api_mode")
+        if api_mode:
+            runtime["api_mode"] = api_mode
+            using_override = True
+
+        if not api_mode and runtime.get("api_mode") == "codex_app_server":
+            runtime["api_mode"] = "codex_responses"
+
+        return runtime, using_override
 
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
@@ -4374,18 +4423,10 @@ class AIAgent:
                     # creds, or credential-pool setups where the resolver can't
                     # reconstruct auth from scratch -- producing the spurious
                     # "No LLM provider configured" warning at end of turn.
-                    _parent_runtime = self._current_main_runtime()
-                    _parent_api_mode = _parent_runtime.get("api_mode") or None
-                    # The review fork needs to call agent-loop tools (memory,
-                    # skill_manage). Those tools require Hermes' own dispatch,
-                    # which the codex_app_server runtime bypasses entirely
-                    # (it runs the turn inside codex's subprocess). So when
-                    # the parent is on codex_app_server, downgrade the review
-                    # fork to codex_responses — same auth/credentials, but
-                    # talks to the OpenAI Responses API directly so Hermes
-                    # owns the loop and the agent-loop tools dispatch.
-                    if _parent_api_mode == "codex_app_server":
-                        _parent_api_mode = "codex_responses"
+                    _review_runtime, _review_uses_aux_runtime = (
+                        self._background_review_runtime(self._current_main_runtime())
+                    )
+                    _review_api_mode = _review_runtime.get("api_mode") or None
                     # skip_memory=True keeps the review fork from
                     # touching external memory plugins (honcho, mem0,
                     # supermemory, etc.).  Without it, the fork's
@@ -4402,16 +4443,17 @@ class AIAgent:
                     # the review still land on disk; the review just
                     # has zero side effects on external providers.
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=_review_runtime.get("model") or self.model,
                         max_iterations=16,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
-                        api_mode=_parent_api_mode,
-                        base_url=_parent_runtime.get("base_url") or None,
-                        api_key=_parent_runtime.get("api_key") or None,
+                        provider=_review_runtime.get("provider") or self.provider,
+                        api_mode=_review_api_mode,
+                        base_url=_review_runtime.get("base_url") or None,
+                        api_key=_review_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
+                        skip_context_files=_review_uses_aux_runtime,
                         skip_memory=True,
                     )
                     review_agent._memory_write_origin = "background_review"
@@ -4429,17 +4471,14 @@ class AIAgent:
                     # _vprint and leak past the stdout redirect (they go via
                     # _print_fn/status_callback, which bypass sys.stdout).
                     review_agent.suppress_status_output = True
-                    # Inherit the parent's cached system prompt verbatim so
-                    # the review fork's outbound HTTP request hits the same
-                    # Anthropic/OpenRouter prefix cache the parent warmed.
-                    # Without this, the fork rebuilds the system prompt from
-                    # scratch (fresh _hermes_now() timestamp, fresh
-                    # session_id, narrower toolset → different skills_prompt)
-                    # and the byte-exact prefix-cache key misses. See
-                    # issue #25322 and PR #17276 for the full analysis +
-                    # measured impact (~26% end-to-end cost reduction on
-                    # Sonnet 4.5).
-                    review_agent._cached_system_prompt = self._cached_system_prompt
+                    # Inherit the parent's cached system prompt verbatim only
+                    # when the review fork inherits the parent's runtime. A
+                    # configured auxiliary runtime is meant to be cheap and
+                    # small, so let it build its own reduced prompt with
+                    # skip_context_files=True instead of replaying the main
+                    # session's full prefix.
+                    if not _review_uses_aux_runtime:
+                        review_agent._cached_system_prompt = self._cached_system_prompt
                     # Defensive: pin session_start + session_id to the
                     # parent's so any code path that re-renders parts of
                     # the system prompt (compression, plugin hooks) still

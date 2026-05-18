@@ -860,6 +860,14 @@ auxiliary:
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
 
+  # Background memory/skill review after a turn
+  background_review:
+    provider: "auto"           # Empty/auto/main = inherit main runtime
+    model: ""                  # e.g. "gpt-5.4-mini" on a cheap local/proxy provider
+    base_url: ""
+    api_key: ""
+    api_mode: ""               # e.g. "chat_completions" to avoid Responses payload replay
+
   # Session search — summarizes past session matches
   session_search:
     provider: "auto"
