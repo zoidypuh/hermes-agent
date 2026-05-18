@@ -59,6 +59,10 @@ class UpstreamAdapter(ABC):
         not in this set get a 404 with a helpful error body.
         """
 
+    def is_path_allowed(self, rel_path: str) -> bool:
+        """Return True if this relative ``/v1`` path may be forwarded."""
+        return rel_path in self.allowed_paths
+
     @abstractmethod
     def is_authenticated(self) -> bool:
         """Return True if the user has usable credentials for this upstream.
