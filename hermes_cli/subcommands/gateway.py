@@ -231,8 +231,11 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
     )
     proxy_start.add_argument(
         "--provider",
-        default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
+        default=None,
+        help=(
+            "Upstream provider. Overrides config.yaml proxy.provider "
+            "(default: nous). See `hermes proxy providers`."
+        ),
     )
     proxy_start.add_argument(
         "--host",

@@ -887,6 +887,41 @@ def test_cmd_proxy_start_refuses_unknown_provider(capsys):
     assert "no-such-provider" in err
 
 
+def test_proxy_provider_defaults_to_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("proxy:\n  provider: no-such-provider\n")
+    from hermes_cli.proxy.cli import _resolve_proxy_provider
+
+    args = MagicMock()
+    args.provider = None
+    assert _resolve_proxy_provider(args) == "no-such-provider"
+
+
+def test_proxy_provider_cli_overrides_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("proxy:\n  provider: no-such-provider\n")
+    from hermes_cli.proxy.cli import _resolve_proxy_provider
+
+    args = MagicMock()
+    args.provider = " nous "
+    assert _resolve_proxy_provider(args) == "nous"
+
+
+def test_cmd_proxy_start_uses_config_provider(capsys, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("proxy:\n  provider: no-such-provider\n")
+    from hermes_cli.proxy.cli import cmd_proxy_start
+
+    args = MagicMock()
+    args.provider = None
+    args.host = None
+    args.port = None
+    rc = cmd_proxy_start(args)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "no-such-provider" in err
+
+
 def test_cmd_proxy_start_refuses_when_unauthenticated(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_cli.proxy.cli import cmd_proxy_start

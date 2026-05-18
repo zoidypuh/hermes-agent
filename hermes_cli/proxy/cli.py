@@ -7,6 +7,7 @@ import logging
 import sys
 from typing import Any
 
+from hermes_cli.config import load_config
 from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
 from hermes_cli.proxy.server import (
     AIOHTTP_AVAILABLE,
@@ -16,6 +17,8 @@ from hermes_cli.proxy.server import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_PROXY_PROVIDER = "nous"
 
 
 def _print_aiohttp_missing() -> None:
@@ -27,6 +30,29 @@ def _print_aiohttp_missing() -> None:
     )
 
 
+def _configured_proxy_provider() -> str:
+    """Return the configured proxy upstream provider, or the built-in default."""
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        logger.exception("proxy: failed to load config; using default provider")
+        return DEFAULT_PROXY_PROVIDER
+    proxy_cfg = cfg.get("proxy") or {}
+    if not isinstance(proxy_cfg, dict):
+        return DEFAULT_PROXY_PROVIDER
+    provider = proxy_cfg.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        return provider.strip()
+    return DEFAULT_PROXY_PROVIDER
+
+
+def _resolve_proxy_provider(args: Any) -> str:
+    explicit = getattr(args, "provider", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return _configured_proxy_provider()
+
+
 def cmd_proxy_start(args: Any) -> int:
     """Run the proxy server in the foreground.
 
@@ -36,7 +62,7 @@ def cmd_proxy_start(args: Any) -> int:
         _print_aiohttp_missing()
         return 1
 
-    provider = getattr(args, "provider", None) or "nous"
+    provider = _resolve_proxy_provider(args)
     try:
         adapter = get_adapter(provider)
     except ValueError as exc:
@@ -123,8 +149,8 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
-        "      Run the proxy in the foreground.\n"
+        "  hermes proxy start [--provider <name>] [--host 127.0.0.1] [--port 8645]\n"
+        "      Run the proxy in the foreground. Without --provider, uses config.yaml proxy.provider.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"
         "  hermes proxy providers\n"
@@ -139,4 +165,6 @@ __all__ = [
     "cmd_proxy_start",
     "cmd_proxy_status",
     "cmd_proxy_list_providers",
+    "_configured_proxy_provider",
+    "_resolve_proxy_provider",
 ]
