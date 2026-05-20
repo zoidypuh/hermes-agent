@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     _load_config,
     _build_embedded_profile_env,
     _normalize_retain_tags,
+    _profile_api_url,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
@@ -322,6 +323,76 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_profile_api_url_reads_hindsight_metadata(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        metadata_path = tmp_path / ".hindsight" / "profiles" / "metadata.json"
+        metadata_path.parent.mkdir(parents=True)
+        metadata_path.write_text(json.dumps({
+            "profiles": {"hermes": {"port": 9177}}
+        }))
+
+        assert _profile_api_url("hermes") == "http://127.0.0.1:9177"
+
+    def test_legacy_local_mode_falls_back_to_external_when_embedded_missing(
+        self, tmp_path, monkeypatch
+    ):
+        config = {
+            "mode": "local",
+            "bank_id": "test-bank",
+            "memory_mode": "tools",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps(config))
+        metadata_path = tmp_path / ".hindsight" / "profiles" / "metadata.json"
+        metadata_path.parent.mkdir(parents=True)
+        metadata_path.write_text(json.dumps({
+            "profiles": {"hermes": {"port": 9177}}
+        }))
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._check_local_runtime",
+            lambda: (False, "missing embedded runtime"),
+        )
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", platform="cli")
+
+        assert p._mode == "local_external"
+        assert p._api_url == "http://127.0.0.1:9177"
+
+    def test_local_external_without_api_url_infers_profile_port(
+        self, tmp_path, monkeypatch
+    ):
+        config = {
+            "mode": "local_external",
+            "bank_id": "test-bank",
+            "memory_mode": "tools",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps(config))
+        metadata_path = tmp_path / ".hindsight" / "profiles" / "metadata.json"
+        metadata_path.parent.mkdir(parents=True)
+        metadata_path.write_text(json.dumps({
+            "profiles": {"hermes": {"port": 9867}}
+        }))
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        p = HindsightMemoryProvider()
+        p.initialize(session_id="test-session", platform="cli")
+
+        assert p._mode == "local_external"
+        assert p._api_url == "http://127.0.0.1:9867"
 
 
 class TestPostSetup:
@@ -1618,7 +1689,6 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
 def test_save_config_sets_owner_only_permissions(tmp_path):

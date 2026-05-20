@@ -8441,6 +8441,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+
+            from gateway.silent_response import is_silent_response
+            _suppress_response_delivery = is_silent_response(response)
+            if _suppress_response_delivery:
+                logger.info(
+                    "Suppressing platform response for %s chat=%s due to silent sentinel",
+                    _platform_name, source.chat_id or "unknown",
+                )
+                response = ""
+
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -8747,8 +8757,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            if not _suppress_response_delivery and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
+
+            if _suppress_response_delivery:
+                return None
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming

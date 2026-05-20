@@ -35,6 +35,8 @@ from gateway.config import (
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+from gateway.silent_response import is_silent_response
+
 # Sentinel to signal the stream is complete
 _DONE = object()
 
@@ -477,6 +479,13 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
+                if got_done and is_silent_response(self._accumulated):
+                    logger.debug("Suppressing streamed silent response sentinel")
+                    self._accumulated = ""
+                    self._last_sent_text = ""
+                    self._final_response_sent = True
+                    return
+
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.

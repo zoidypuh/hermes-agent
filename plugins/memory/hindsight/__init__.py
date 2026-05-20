@@ -456,6 +456,22 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     )
     return profile_env
 
+
+def _profile_api_url(profile: str = "hermes") -> str | None:
+    """Return the local Hindsight API URL for a profile, if metadata exists."""
+    from pathlib import Path
+
+    try:
+        metadata_path = Path.home() / ".hindsight" / "profiles" / "metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        port = metadata.get("profiles", {}).get(profile, {}).get("port")
+        if port:
+            return f"http://127.0.0.1:{int(port)}"
+    except Exception:
+        return None
+    return None
+
+
 def _sanitize_bank_segment(value: str) -> str:
     """Sanitize a bank_id_template placeholder value.
 
@@ -1136,10 +1152,20 @@ class HindsightMemoryProvider(MemoryProvider):
             self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
             _DEFAULT_IDLE_TIMEOUT,
         )
-        # "local" is a legacy alias for "local_embedded"
+        profile = _embedded_profile_name(self._config)
         if self._mode == "local":
-            self._mode = "local_embedded"
-        if self._mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if available:
+                self._mode = "local_embedded"
+            else:
+                self._mode = "local_external"
+                if not (self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL")):
+                    self._config.setdefault("api_url", _profile_api_url(profile) or _DEFAULT_LOCAL_URL)
+                logger.info(
+                    "Hindsight local mode using external daemon because embedded runtime is unavailable: %s",
+                    reason,
+                )
+        elif self._mode == "local_embedded":
             available, reason = _check_local_runtime()
             if not available:
                 logger.warning(
@@ -1150,6 +1176,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 return
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in {"local_embedded", "local_external"} else _DEFAULT_API_URL
+        if self._mode == "local_external" and not (self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL")):
+            default_url = _profile_api_url(profile) or default_url
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 

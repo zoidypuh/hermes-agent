@@ -360,6 +360,27 @@ class TestStreamRunMediaStripping:
 
         assert consumer.already_sent
 
+    @pytest.mark.asyncio
+    async def test_exact_silent_sentinel_suppresses_stream_delivery(self):
+        """A streamed [SILENT] final response must not create a platform message."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=40)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("[SILENT]")
+        consumer.finish()
+
+        await consumer.run()
+
+        adapter.send.assert_not_called()
+        adapter.edit_message.assert_not_called()
+        assert consumer.final_response_sent
+        assert not consumer.already_sent
+
 
 # ── Segment break (tool boundary) tests ──────────────────────────────────
 
