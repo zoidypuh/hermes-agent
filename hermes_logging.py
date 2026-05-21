@@ -264,6 +264,9 @@ def setup_verbose_logging() -> None:
 
     Called by ``AIAgent.__init__()`` when ``verbose_logging=True``.
     """
+    if os.environ.get("HERMES_DISABLE_CONSOLE_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()

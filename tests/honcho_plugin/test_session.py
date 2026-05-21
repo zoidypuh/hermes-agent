@@ -941,6 +941,50 @@ class TestBaseContextSummary:
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
 
+    def test_brief_format_keeps_only_relevant_observations(self):
+        """Brief mode injects a compact observation list, not the full profile."""
+        provider = HonchoMemoryProvider()
+        provider._injection_style = "brief"
+        provider._max_injected_observations = 2
+        provider._memory_observation_max_chars = 500
+        ctx = {
+            "summary": "Current session is about Honcho memory freshness.",
+            "representation": (
+                "## Explicit Observations\n\n"
+                "[2026-05-21 13:24:18] gismar prefers concise, relevant memory observations.\n"
+                "[2026-05-21 13:24:18] gismar prefers memory observations over large stale memory dumps.\n"
+                "[2026-05-17 09:17:44] unrelated older detail should not be included.\n"
+            ),
+            "card": "- broad profile fact that should not be reached",
+        }
+
+        formatted = provider._format_prefetch_context(ctx)
+
+        assert "Relevant memory observations:" in formatted
+        assert "gismar prefers concise, relevant memory observations." in formatted
+        assert "gismar prefers memory observations over large stale memory dumps." in formatted
+        assert "unrelated older detail" not in formatted
+        assert "User Representation" not in formatted
+
+    def test_brief_format_filters_observations_without_query_overlap(self):
+        """Brief mode should stay silent instead of injecting unrelated memory."""
+        provider = HonchoMemoryProvider()
+        provider._injection_style = "brief"
+        ctx = {
+            "representation": (
+                "## Explicit Observations\n\n"
+                "[2026-05-17 09:17:44] gismar wants Supertonic to support German expressive cues.\n"
+                "[2026-05-17 09:17:44] gismar likes originating chat task notifications.\n"
+            ),
+        }
+
+        formatted = provider._format_prefetch_context(
+            ctx,
+            query="debug postgres queue freshness",
+        )
+
+        assert formatted == ""
+
 
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""

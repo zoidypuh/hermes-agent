@@ -5,6 +5,7 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import os
 import threading
 from typing import Callable, Optional
 
@@ -146,6 +147,16 @@ def maybe_auto_title(
     - This appears to be the first user→assistant exchange
     - No title is already set
     """
+    if os.environ.get("HERMES_DISABLE_AUTO_TITLE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+
+    try:
+        from agent.auxiliary_client import _get_auxiliary_task_config
+        if str(_get_auxiliary_task_config("title_generation").get("enabled", "true")).strip().lower() in {"0", "false", "no", "off"}:
+            return
+    except Exception:
+        pass
+
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 

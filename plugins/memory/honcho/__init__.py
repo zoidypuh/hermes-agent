@@ -214,8 +214,14 @@ class HonchoMemoryProvider(MemoryProvider):
         self._dialectic_cadence = 1  # backwards-compat fallback; wizard writes 2 on new configs
         self._dialectic_depth = 1   # how many .chat() calls per dialectic cycle (1-3)
         self._dialectic_depth_levels: list[str] | None = None  # per-pass reasoning levels
+        self._dialectic_supplement = True
         self._reasoning_heuristic: bool = True  # scale base level by query length
         self._reasoning_level_cap: str = "high"  # ceiling for auto-selected level
+        self._injection_style = "full"  # "full" or "brief"
+        self._max_injected_observations = 3
+        self._memory_observation_max_chars = 700
+        self._brief_include_summary = True
+        self._brief_include_card = False
         self._last_context_turn = -999
         self._last_dialectic_turn = -999
 
@@ -306,18 +312,34 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- B5: cost-awareness config -----
             try:
                 raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
+
+                def _raw_value(key: str, default: Any = None) -> Any:
+                    host_block = (raw.get("hosts") or {}).get(cfg.host, {})
+                    return host_block.get(key, raw.get(key, default))
+
+                self._injection_frequency = _raw_value("injectionFrequency", "every-turn")
+                self._context_cadence = int(_raw_value("contextCadence", 1))
                 # Backwards-compat: unset dialecticCadence falls back to 1
                 # (every turn) so existing honcho.json configs without the key
                 # behave as they did before. New setups via `hermes honcho setup`
                 # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                self._dialectic_cadence = int(_raw_value("dialecticCadence", 1))
+                self._dialectic_supplement = bool(_raw_value("dialecticSupplement", True))
                 self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
                 self._dialectic_depth_levels = cfg.dialectic_depth_levels
                 self._reasoning_heuristic = cfg.reasoning_heuristic
                 if cfg.reasoning_level_cap in self._LEVEL_ORDER:
                     self._reasoning_level_cap = cfg.reasoning_level_cap
+                style = str(_raw_value("injectionStyle", "full")).strip().lower()
+                self._injection_style = style if style in {"full", "brief"} else "full"
+                self._max_injected_observations = max(
+                    1, int(_raw_value("maxInjectedObservations", 3))
+                )
+                self._memory_observation_max_chars = max(
+                    120, int(_raw_value("memoryObservationMaxChars", 700))
+                )
+                self._brief_include_summary = bool(_raw_value("briefIncludeSummary", True))
+                self._brief_include_card = bool(_raw_value("briefIncludeCard", False))
             except Exception as e:
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
 
@@ -405,10 +427,15 @@ class HonchoMemoryProvider(MemoryProvider):
         # full configured depth and writes into _prefetch_result so turn 1
         # consumes the result directly.
         if self._recall_mode in {"context", "hybrid"}:
-            try:
-                self._manager.prefetch_context(self._session_key)
-            except Exception as e:
-                logger.debug("Honcho context prewarm failed: %s", e)
+            if self._injection_style != "brief":
+                try:
+                    self._manager.prefetch_context(self._session_key)
+                except Exception as e:
+                    logger.debug("Honcho context prewarm failed: %s", e)
+
+            if not self._dialectic_supplement:
+                logger.debug("Honcho dialectic pre-warm skipped: supplement disabled")
+                return
 
             _prewarm_query = (
                 "Summarize what you know about this user. "
@@ -493,6 +520,84 @@ class HonchoMemoryProvider(MemoryProvider):
         if not parts:
             return ""
         return "\n\n".join(parts)
+
+    _BRIEF_STOPWORDS = {
+        "about", "after", "also", "because", "before", "being", "between",
+        "could", "current", "does", "doing", "from", "have", "honcho",
+        "into", "just", "large", "like",
+        "memory", "more", "over", "should",
+        "that", "their", "there", "these", "this", "turn", "user",
+        "what", "when", "where", "with", "would",
+    }
+
+    @classmethod
+    def _brief_terms(cls, text: str) -> set[str]:
+        return {
+            tok
+            for tok in re.findall(r"[A-Za-z0-9_-]{4,}", text.lower())
+            if tok not in cls._BRIEF_STOPWORDS
+        }
+
+    def _format_brief_memory_context(self, ctx: dict, query: str = "") -> str:
+        """Format only the most relevant Honcho observations for injection.
+
+        The full context formatter is useful for cold starts, but it can flood
+        active conversations with old profile data. Brief mode assumes
+        get_prefetch_context() already passed the current user message as a
+        Honcho search query and keeps only a small set of observation lines.
+        """
+        parts: list[str] = []
+
+        summary = (ctx.get("summary") or "").strip()
+        if self._brief_include_summary and summary:
+            parts.append(f"Session: {summary}")
+
+        query_terms = self._brief_terms(query)
+        observations: list[str] = []
+        keys = ["representation"]
+        if self._brief_include_card:
+            keys.append("card")
+
+        for key in keys:
+            text = (ctx.get(key) or "").strip()
+            if not text:
+                continue
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("##"):
+                    continue
+                line = re.sub(r"^\[[^\]]+\]\s*", "", line)
+                line = re.sub(r"^[-*]\s*", "", line)
+                if query_terms:
+                    overlap = self._brief_terms(line) & query_terms
+                    required_overlap = 2 if len(query_terms) > 1 else 1
+                    if len(overlap) < required_overlap:
+                        continue
+                if line and line not in observations:
+                    observations.append(line)
+                if len(observations) >= self._max_injected_observations:
+                    break
+            if len(observations) >= self._max_injected_observations:
+                break
+
+        if observations:
+            joined = "\n".join(f"- {obs}" for obs in observations)
+            parts.append(f"Relevant memory observations:\n{joined}")
+
+        if not parts:
+            return ""
+
+        text = "\n\n".join(parts)
+        if len(text) > self._memory_observation_max_chars:
+            text = text[: self._memory_observation_max_chars].rsplit(" ", 1)[0] + " …"
+        return text
+
+    def _format_prefetch_context(self, ctx: dict, query: str = "") -> str:
+        if self._injection_style == "brief":
+            return self._format_brief_memory_context(ctx, query=query)
+        return self._format_first_turn_context(ctx)
 
     def system_prompt_block(self) -> str:
         """Return system prompt text, adapted by recall_mode.
@@ -580,8 +685,8 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._base_context_cache is None:
                 # First call — synchronous fetch
                 try:
-                    ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                    ctx = self._manager.get_prefetch_context(self._session_key, query)
+                    self._base_context_cache = self._format_prefetch_context(ctx, query=query) if ctx else ""
                     self._last_context_turn = self._turn_count
                 except Exception as e:
                     logger.debug("Honcho base context fetch failed: %s", e)
@@ -592,7 +697,7 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._manager:
             fresh_ctx = self._manager.pop_context_result(self._session_key)
             if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
+                formatted = self._format_prefetch_context(fresh_ctx, query=query)
                 if formatted:
                     with self._base_context_lock:
                         self._base_context_cache = formatted
@@ -602,6 +707,11 @@ class HonchoMemoryProvider(MemoryProvider):
             parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
+        if not self._dialectic_supplement:
+            if not parts:
+                return ""
+            return self._truncate_to_budget("\n\n".join(parts))
+
         # On the very first turn, no queue_prefetch() has run yet so the
         # dialectic result is empty.  Run with a bounded timeout so a slow
         # Honcho connection doesn't block the first response indefinitely.
@@ -728,6 +838,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho context prefetch failed: %s", e)
 
         # ----- Dialectic prefetch (supplement layer) -----
+        if not self._dialectic_supplement:
+            return
+
         # Thread-alive guard with stale-thread recovery: a hung Honcho call
         # older than timeout × multiplier is treated as dead so it can't
         # block subsequent fires.
