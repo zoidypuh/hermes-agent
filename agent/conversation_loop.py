@@ -486,6 +486,35 @@ def run_conversation(
                 )
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
+        elif hasattr(agent.context_compressor, "should_compress_preflight"):
+            # Sub-threshold path: let the active context engine decide if
+            # cheap incremental maintenance is needed before this turn. Engines
+            # such as hermes-lcm can compact leaf chunks while the raw backlog
+            # is still far below the main context pressure threshold. The
+            # built-in ContextEngine default returns False, so normal compressor
+            # behavior is unchanged.
+            try:
+                _wants_preflight = agent.context_compressor.should_compress_preflight(messages)
+            except Exception as _preflight_exc:
+                logger.debug(
+                    "should_compress_preflight raised %s; skipping",
+                    _preflight_exc,
+                )
+                _wants_preflight = False
+            if _wants_preflight:
+                logger.info(
+                    "Engine-driven preflight maintenance: %s engine requested compress() at ~%s tokens",
+                    getattr(agent.context_compressor, "name", "context_engine"),
+                    f"{_preflight_tokens:,}",
+                )
+                messages, active_system_prompt = agent._compress_context(
+                    messages, system_message, approx_tokens=_preflight_tokens,
+                    task_id=effective_task_id,
+                )
+                # Compression may have rotated to a child session; clear the
+                # original history reference so persistence writes the complete
+                # compressed transcript to the new session DB.
+                conversation_history = None
 
     # Plugin hook: pre_llm_call
     # Fired once per turn before the tool-calling loop.  Plugins can
