@@ -11,6 +11,7 @@ stack.
 
 import os
 import sys
+import json
 
 import pytest
 
@@ -29,6 +30,91 @@ class TestPublicAPI:
         assert callable(start_recording)
         assert callable(stop_and_transcribe)
         assert callable(speak_text)
+
+
+class TestMaraSwitchboardOutputProvider:
+    def test_detects_switchboard_voice_prompt(self):
+        from hermes_cli.voice import is_switchboard_voice_prompt
+
+        assert is_switchboard_voice_prompt("[V] mach das bitte") is True
+        assert is_switchboard_voice_prompt("  [v] hello") is True
+        assert is_switchboard_voice_prompt("[voice] hello") is False
+        assert is_switchboard_voice_prompt("normal text") is False
+
+    def test_switchboard_prompt_delivers_when_provider_configured(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        from hermes_cli.voice import should_deliver_voice_output
+
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"voice": {"output_provider": "mara_switchboard"}},
+        )
+
+        assert should_deliver_voice_output("[V] hello") is True
+        assert should_deliver_voice_output("hello", native_voice_mode=True) is True
+        assert should_deliver_voice_output("hello") is False
+
+    def test_local_tts_prompt_requires_tts_enabled(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        from hermes_cli.voice import should_deliver_voice_output
+
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {"voice": {"output_provider": "local_tts"}},
+        )
+
+        assert should_deliver_voice_output("[V] hello") is False
+        assert should_deliver_voice_output("hello", native_voice_mode=True) is False
+        assert should_deliver_voice_output("hello", tts_enabled=True) is True
+
+    def test_send_to_mara_switchboard_posts_sanitized_text(self, monkeypatch):
+        import hermes_cli.config as config_mod
+        import hermes_cli.voice as voice_mod
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok": true, "status": "queued"}'
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        monkeypatch.setattr(
+            config_mod,
+            "load_config",
+            lambda: {
+                "voice": {
+                    "output_provider": "mara_switchboard",
+                    "switchboard_url": "http://127.0.0.1:8768",
+                    "switchboard_timeout_seconds": 1.5,
+                },
+            },
+        )
+        monkeypatch.setattr(voice_mod.urllib.request, "urlopen", fake_urlopen)
+
+        result = voice_mod.send_to_mara_switchboard(
+            "**Hallo** [Gismar](https://example.invalid)",
+            message_id="m_test",
+        )
+
+        assert result["success"] is True
+        assert captured["url"] == "http://127.0.0.1:8768/api/mara-reply"
+        assert captured["timeout"] == 1.5
+        assert captured["payload"]["text"] == "Hallo Gismar"
+        assert captured["payload"]["message_id"] == "m_test"
+        assert captured["payload"]["source"] == "hermes-voice-output"
 
 
 class TestNormalizeVoiceRecordKeyForPromptToolkit:

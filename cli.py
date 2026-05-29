@@ -11029,39 +11029,39 @@ class HermesCLI:
                         _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                 threading.Thread(target=_restart_recording, daemon=True).start()
 
-    def _voice_speak_response_async(self, text: str) -> None:
+    def _voice_speak_response_async(self, text: str, *, force: bool = False) -> None:
         """Schedule TTS and mark it pending before continuous recording can restart."""
-        if not self._voice_tts or not text:
+        if not (force or self._voice_tts) or not text:
             return
         self._voice_tts_done.clear()
         threading.Thread(
             target=self._voice_speak_response,
-            args=(text,),
+            args=(text, force),
             daemon=True,
         ).start()
 
-    def _voice_speak_response(self, text: str):
+    def _voice_speak_response(self, text: str, force: bool = False):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
-        if not self._voice_tts:
+        if not (force or self._voice_tts):
             return
         self._voice_tts_done.clear()
         try:
+            from hermes_cli.voice import (
+                prepare_voice_output_text,
+                send_to_mara_switchboard,
+                voice_output_prefers_switchboard,
+            )
+
+            if voice_output_prefers_switchboard():
+                result = send_to_mara_switchboard(text)
+                if not result.get("success"):
+                    _cprint(f"{_DIM}Mara Switchboard output failed: {result.get('error', 'unknown error')}{_RST}")
+                return
+
             from tools.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
 
-            # Strip markdown and non-speech content for cleaner TTS
-            tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
-            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
-            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
-            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
-            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
-            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
-            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
-            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
-            tts_text = tts_text.strip()
+            tts_text = prepare_voice_output_text(text)
             if not tts_text:
                 return
 
@@ -11850,7 +11850,20 @@ class HermesCLI:
             stream_callback = None
             stop_event = None
 
-            if self._voice_tts:
+            from hermes_cli.voice import (
+                is_switchboard_voice_prompt,
+                should_deliver_voice_output,
+                voice_output_prefers_switchboard,
+            )
+
+            _switchboard_voice_turn = is_switchboard_voice_prompt(message)
+            _voice_should_deliver = should_deliver_voice_output(
+                message,
+                native_voice_mode=self._voice_mode,
+                tts_enabled=self._voice_tts,
+            )
+
+            if self._voice_tts and not voice_output_prefers_switchboard():
                 try:
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
@@ -11903,7 +11916,7 @@ class HermesCLI:
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
+            if (self._voice_mode or _switchboard_voice_turn) and isinstance(message, str):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
@@ -12261,8 +12274,11 @@ class HermesCLI:
 
             # Speak response aloud if voice TTS is enabled
             # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
-                self._voice_speak_response_async(response)
+            if _voice_should_deliver and response and not use_streaming_tts:
+                self._voice_speak_response_async(
+                    response,
+                    force=not self._voice_tts,
+                )
 
 
             # Re-queue the interrupt message (and any that arrived while we were

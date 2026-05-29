@@ -3763,23 +3763,29 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 except Exception:
                     pass
 
-            # CLI parity: when voice-mode TTS is on, speak the agent reply
-            # (cli.py:_voice_speak_response).  Only the final text — tool
-            # calls / reasoning already stream separately and would be
-            # noisy to read aloud.
+            # CLI parity: when voice output is on, speak the agent reply.
+            # Switchboard-originated [V] turns also use the configured
+            # voice output provider so Mara does not silently fall back to
+            # screen-only output.
             if (
                 status == "complete"
                 and isinstance(raw, str)
                 and raw.strip()
-                and _voice_tts_enabled()
             ):
                 try:
-                    from hermes_cli.voice import speak_text
+                    from hermes_cli.voice import (
+                        deliver_voice_output,
+                        should_deliver_voice_output,
+                    )
 
-                    spoken = raw
-                    threading.Thread(
-                        target=speak_text, args=(spoken,), daemon=True
-                    ).start()
+                    if should_deliver_voice_output(
+                        text,
+                        native_voice_mode=_voice_mode_enabled(),
+                        tts_enabled=_voice_tts_enabled(),
+                    ):
+                        threading.Thread(
+                            target=deliver_voice_output, args=(raw,), daemon=True
+                        ).start()
                 except ImportError:
                     logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
                 except Exception as e:
@@ -6060,6 +6066,12 @@ def _(rid, params: dict) -> dict:
             "record_key": _voice_record_key(),
             "tts": _voice_tts_enabled(),
         }
+        try:
+            from hermes_cli.voice import voice_output_provider_from_config
+
+            payload["output_provider"] = voice_output_provider_from_config()
+        except Exception:
+            pass
         try:
             from tools.voice_mode import check_voice_requirements
 

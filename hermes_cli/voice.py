@@ -21,10 +21,14 @@ Two usage modes are exposed:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import sys
 import threading
+import urllib.request
+import uuid
 from typing import Any, Callable, Optional
 
 # Modifier aliases mirrored from the TUI parser (``ui-tui/src/lib/platform.ts``)
@@ -222,6 +226,11 @@ from tools.voice_mode import (
 
 logger = logging.getLogger(__name__)
 
+MARA_SWITCHBOARD_OUTPUT_PROVIDERS = frozenset(
+    {"mara_switchboard", "mara-switchboard", "switchboard"}
+)
+DEFAULT_MARA_SWITCHBOARD_REPLY_URL = "http://127.0.0.1:8768/api/mara-reply"
+
 
 def _debug(msg: str) -> None:
     """Emit a debug breadcrumb when HERMES_VOICE_DEBUG=1.
@@ -255,6 +264,158 @@ def _beeps_enabled() -> bool:
     except Exception:
         pass
     return True
+
+
+def _voice_config_dict() -> dict[str, Any]:
+    """Return the configured ``voice:`` block, tolerating malformed YAML."""
+    try:
+        from hermes_cli.config import load_config
+
+        voice_cfg = load_config().get("voice", {})
+        if isinstance(voice_cfg, dict):
+            return voice_cfg
+    except Exception:
+        pass
+    return {}
+
+
+def voice_output_provider_from_config(default: str = "local_tts") -> str:
+    """Return the configured voice output provider name.
+
+    ``local_tts`` preserves Hermes' existing behavior. ``mara_switchboard``
+    routes assistant replies to the local Switchboard relay so the browser
+    voice runtime owns holdback, barge-in, and playback.
+    """
+    provider = _voice_config_dict().get("output_provider", default)
+    return str(provider or default).strip().lower()
+
+
+def voice_output_prefers_switchboard() -> bool:
+    return voice_output_provider_from_config() in MARA_SWITCHBOARD_OUTPUT_PROVIDERS
+
+
+def is_switchboard_voice_prompt(message: Any) -> bool:
+    """Return True for Switchboard-originated user turns such as ``[V] hi``."""
+    if not isinstance(message, str):
+        return False
+    return bool(re.match(r"^\s*\[v\](?:\s|$)", message, re.IGNORECASE))
+
+
+def should_deliver_voice_output(
+    user_message: Any,
+    *,
+    native_voice_mode: bool = False,
+    tts_enabled: bool = False,
+) -> bool:
+    """Return True when the final assistant text should be sent to voice output."""
+    if tts_enabled:
+        return True
+    return voice_output_prefers_switchboard() and (
+        native_voice_mode or is_switchboard_voice_prompt(user_message)
+    )
+
+
+def _mara_switchboard_reply_url() -> str:
+    cfg = _voice_config_dict()
+    raw = (
+        cfg.get("switchboard_url")
+        or cfg.get("mara_switchboard_url")
+        or os.environ.get("MARA_SWITCHBOARD_REPLY_URL")
+        or os.environ.get("MARA_DUPLEX_REPLY_URL")
+        or DEFAULT_MARA_SWITCHBOARD_REPLY_URL
+    )
+    url = str(raw or DEFAULT_MARA_SWITCHBOARD_REPLY_URL).strip()
+    if not url:
+        url = DEFAULT_MARA_SWITCHBOARD_REPLY_URL
+    if not url.endswith(("/api/mara-reply", "/api/assistant-reply", "/api/speak")):
+        url = url.rstrip("/") + "/api/mara-reply"
+    return url
+
+
+def _mara_switchboard_timeout() -> float:
+    raw = _voice_config_dict().get("switchboard_timeout_seconds", 5.0)
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return 5.0
+    return timeout if timeout > 0 else 5.0
+
+
+def prepare_voice_output_text(text: str, max_chars: int = 4000) -> str:
+    """Strip markup/noise before local TTS or Switchboard voice delivery."""
+    import re
+
+    tts_text = text[:max_chars] if len(text) > max_chars else text
+    tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)
+    tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
+    tts_text = re.sub(r'https?://\S+', '', tts_text)
+    tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)
+    tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)
+    tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)
+    tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)
+    tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)
+    tts_text = re.sub(r'---+', '', tts_text)
+    tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)
+    return tts_text.strip()
+
+
+def send_to_mara_switchboard(text: str, *, message_id: str | None = None) -> dict[str, Any]:
+    """Post assistant text to Mara Switchboard's reply endpoint."""
+    spoken_text = prepare_voice_output_text(text)
+    if not spoken_text:
+        return {"success": False, "provider": "mara_switchboard", "error": "empty text"}
+
+    url = _mara_switchboard_reply_url()
+    payload = {
+        "text": spoken_text,
+        "message_id": message_id or f"h_{uuid.uuid4().hex[:12]}",
+        "source": "hermes-voice-output",
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_mara_switchboard_timeout()) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            body = {"raw": raw}
+        ok = bool(body.get("ok", True))
+        if not ok:
+            logger.warning("Mara Switchboard rejected voice output: %s", body)
+        return {
+            "success": ok,
+            "provider": "mara_switchboard",
+            "url": url,
+            "message_id": payload["message_id"],
+            "response": body,
+        }
+    except Exception as exc:
+        logger.warning("Mara Switchboard voice output failed: %s", exc)
+        _debug(f"mara_switchboard output failed: {type(exc).__name__}: {exc}")
+        return {
+            "success": False,
+            "provider": "mara_switchboard",
+            "url": url,
+            "message_id": payload["message_id"],
+            "error": str(exc),
+        }
+
+
+def deliver_voice_output(text: str, *, force_provider: str | None = None) -> dict[str, Any]:
+    """Deliver assistant voice output through the configured provider."""
+    provider = (force_provider or voice_output_provider_from_config()).strip().lower()
+    if provider in MARA_SWITCHBOARD_OUTPUT_PROVIDERS:
+        return send_to_mara_switchboard(text)
+    if provider in {"none", "off", "disabled"}:
+        return {"success": True, "provider": provider, "skipped": True}
+
+    speak_text(text)
+    return {"success": True, "provider": "local_tts"}
 
 
 def _play_beep(frequency: int, count: int = 1) -> None:
@@ -781,18 +942,7 @@ def speak_text(text: str) -> None:
     try:
         from tools.tts_tool import text_to_speech_tool
 
-        tts_text = text[:4000] if len(text) > 4000 else text
-        tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)             # fenced code blocks
-        tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)    # [text](url) → text
-        tts_text = re.sub(r'https?://\S+', '', tts_text)                # bare URLs
-        tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)            # bold
-        tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)                # italic
-        tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)                  # inline code
-        tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-        tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list bullets
-        tts_text = re.sub(r'---+', '', tts_text)                        # horizontal rules
-        tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)                  # excess newlines
-        tts_text = tts_text.strip()
+        tts_text = prepare_voice_output_text(text)
         if not tts_text:
             return
 
