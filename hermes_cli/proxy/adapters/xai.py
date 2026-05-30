@@ -16,15 +16,26 @@ _POOL_PROVIDER = "xai-oauth"
 
 # xAI's public API is OpenAI-compatible for the endpoints Hermes commonly
 # uses. The Responses endpoint is included because Hermes' native xAI runtime
-# uses codex_responses mode.
+# uses codex_responses mode. Media endpoints are forwarded verbatim so tools
+# like ComfyUI can use Hermes' xAI OAuth bearer through the local proxy.
 _ALLOWED_PATHS: FrozenSet[str] = frozenset(
     {
         "/responses",
         "/chat/completions",
         "/completions",
         "/embeddings",
+        "/images/edits",
+        "/images/generations",
         "/models",
+        "/videos/generations",
     }
+)
+_VIDEO_PATH_PREFIX = "/videos/"
+_VIDEO_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+    "-_"
 )
 
 
@@ -39,7 +50,7 @@ class XAIGrokAdapter(UpstreamAdapter):
 
     @property
     def name(self) -> str:
-        return "xai"
+        return "xai-oauth"
 
     @property
     def display_name(self) -> str:
@@ -48,6 +59,20 @@ class XAIGrokAdapter(UpstreamAdapter):
     @property
     def allowed_paths(self) -> FrozenSet[str]:
         return _ALLOWED_PATHS
+
+    def is_path_allowed(self, path: str) -> bool:
+        if path in _ALLOWED_PATHS:
+            return True
+        if not path.startswith(_VIDEO_PATH_PREFIX):
+            return False
+        request_id = path[len(_VIDEO_PATH_PREFIX):]
+        return bool(request_id) and "/" not in request_id and all(
+            ch in _VIDEO_ID_CHARS for ch in request_id
+        )
+
+    def allowed_paths_description(self) -> str:
+        paths = sorted(_ALLOWED_PATHS | {"/videos/{request_id}"})
+        return ", ".join(paths)
 
     def is_authenticated(self) -> bool:
         pool = self._load_pool()

@@ -26,8 +26,8 @@ def test_registry_lists_nous():
     assert "nous" in ADAPTERS
 
 
-def test_registry_lists_xai():
-    assert "xai" in ADAPTERS
+def test_registry_lists_xai_oauth():
+    assert "xai-oauth" in ADAPTERS
 
 
 def test_get_adapter_returns_instance():
@@ -36,8 +36,8 @@ def test_get_adapter_returns_instance():
     assert isinstance(adapter, UpstreamAdapter)
 
 
-def test_get_adapter_returns_xai_instance():
-    adapter = get_adapter("xai")
+def test_get_adapter_returns_xai_oauth_instance():
+    adapter = get_adapter("xai-oauth")
     assert isinstance(adapter, XAIGrokAdapter)
     assert isinstance(adapter, UpstreamAdapter)
 
@@ -45,6 +45,7 @@ def test_get_adapter_returns_xai_instance():
 def test_get_adapter_case_insensitive():
     assert isinstance(get_adapter("NOUS"), NousPortalAdapter)
     assert isinstance(get_adapter("  Nous  "), NousPortalAdapter)
+    assert isinstance(get_adapter("XAI-OAUTH"), XAIGrokAdapter)
     assert isinstance(get_adapter("XAI"), XAIGrokAdapter)
 
 
@@ -375,11 +376,18 @@ def _write_xai_pool_entry(
 
 def test_xai_adapter_metadata():
     adapter = XAIGrokAdapter()
-    assert adapter.name == "xai"
+    assert adapter.name == "xai-oauth"
     assert adapter.display_name == "xAI Grok OAuth"
     assert "/responses" in adapter.allowed_paths
     assert "/chat/completions" in adapter.allowed_paths
+    assert "/images/edits" in adapter.allowed_paths
+    assert "/images/generations" in adapter.allowed_paths
     assert "/models" in adapter.allowed_paths
+    assert "/videos/generations" in adapter.allowed_paths
+    assert adapter.is_path_allowed("/videos/59fc3415-1f8f-96f6-ac4d-480758f7823a")
+    assert not adapter.is_path_allowed("/videos/59fc3415-1f8f-96f6-ac4d-480758f7823a/logs")
+    assert not adapter.is_path_allowed("/videos/")
+    assert "/videos/{request_id}" in adapter.allowed_paths_description()
 
 
 def test_xai_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch):
@@ -655,9 +663,13 @@ def _build_fake_upstream(captured: Dict[str, Any]) -> "web.Application":
         await resp.write_eof()
         return resp
 
-    app = web.Application()
+    app = web.Application(client_max_size=4 * 1024 * 1024)
     app.router.add_route("*", "/v1/chat/completions", echo)
     app.router.add_route("*", "/v1/embeddings", echo)
+    app.router.add_route("*", "/v1/images/edits", echo)
+    app.router.add_route("*", "/v1/images/generations", echo)
+    app.router.add_route("*", "/v1/videos/generations", echo)
+    app.router.add_route("*", "/v1/videos/{request_id}", echo)
     app.router.add_route("*", "/v1/sse", sse)
     return app
 
@@ -704,6 +716,142 @@ def test_server_forwards_chat_completions():
             req = captured["requests"][0]
             assert req["auth"] == "Bearer real-portal-key"
             assert "Hermes-4-70B" in req["body"]
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_forwards_xai_image_edits_path():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="xai-oauth-token",
+            allowed=XAIGrokAdapter().allowed_paths,
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/images/edits",
+                    data=b"fake-multipart-body",
+                    headers={"Authorization": "Bearer client-dummy-key"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["echoed"] is True
+
+            assert len(captured["requests"]) == 1
+            req = captured["requests"][0]
+            assert req["path"] == "/v1/images/edits"
+            assert req["auth"] == "Bearer xai-oauth-token"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_forwards_xai_video_generations_path():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="xai-oauth-token",
+            allowed=XAIGrokAdapter().allowed_paths,
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/videos/generations",
+                    json={"model": "grok-imagine-video", "prompt": "test"},
+                    headers={"Authorization": "Bearer client-dummy-key"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["echoed"] is True
+
+            assert len(captured["requests"]) == 1
+            req = captured["requests"][0]
+            assert req["path"] == "/v1/videos/generations"
+            assert req["auth"] == "Bearer xai-oauth-token"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_forwards_xai_video_poll_path():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="xai-oauth-token",
+            allowed=XAIGrokAdapter().allowed_paths,
+        )
+        adapter.is_path_allowed = XAIGrokAdapter().is_path_allowed
+        adapter.allowed_paths_description = XAIGrokAdapter().allowed_paths_description
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            request_id = "59fc3415-1f8f-96f6-ac4d-480758f7823a"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{proxy_base}/v1/videos/{request_id}",
+                    headers={"Authorization": "Bearer client-dummy-key"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["echoed"] is True
+
+            assert len(captured["requests"]) == 1
+            req = captured["requests"][0]
+            assert req["path"] == f"/v1/videos/{request_id}"
+            assert req["auth"] == "Bearer xai-oauth-token"
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_server_forwards_large_xai_image_edit_body():
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        adapter = FakeAdapter(
+            f"{upstream_base}/v1",
+            bearer="xai-oauth-token",
+            allowed=XAIGrokAdapter().allowed_paths,
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+
+        try:
+            body = b"x" * (2 * 1024 * 1024)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{proxy_base}/v1/images/edits",
+                    data=body,
+                    headers={"Authorization": "Bearer client-dummy-key"},
+                ) as resp:
+                    assert resp.status == 200
+                    data = await resp.json()
+                    assert data["echoed"] is True
+
+            assert len(captured["requests"]) == 1
+            req = captured["requests"][0]
+            assert req["path"] == "/v1/images/edits"
+            assert req["auth"] == "Bearer xai-oauth-token"
+            assert len(req["body"]) == len(body)
         finally:
             await proxy_runner.cleanup()
             await upstream_runner.cleanup()
@@ -871,6 +1019,7 @@ def test_cmd_proxy_providers_runs(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "nous" in out
+    assert "xai-oauth" in out
     assert "Nous Portal" in out
 
 

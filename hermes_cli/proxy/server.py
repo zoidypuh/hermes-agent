@@ -50,6 +50,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
 
 DEFAULT_PORT = 8645
 DEFAULT_HOST = "127.0.0.1"
+DEFAULT_MAX_BODY_SIZE = 128 * 1024 * 1024
 
 
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":
@@ -89,7 +90,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             "pip install 'hermes-agent[messaging]' or `pip install aiohttp`."
         )
 
-    app = web.Application()
+    app = web.Application(client_max_size=DEFAULT_MAX_BODY_SIZE)
     # AppKey ensures forward-compat with future aiohttp versions that strip
     # bare-string keys.
     _adapter_key = web.AppKey("adapter", UpstreamAdapter)
@@ -109,8 +110,8 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         rel_path = request.match_info.get("tail", "")
         rel_path = "/" + rel_path.lstrip("/")
 
-        if rel_path not in adapter.allowed_paths:
-            allowed = ", ".join(sorted(adapter.allowed_paths))
+        if not adapter.is_path_allowed(rel_path):
+            allowed = adapter.allowed_paths_description()
             return _json_error(
                 404,
                 f"Path /v1{rel_path} is not forwarded by this proxy. "
@@ -124,10 +125,9 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")
 
-        # Forward body verbatim. Read into memory once — request bodies for
-        # chat/completions/embeddings are small (<1MB typically). If we ever
-        # need to forward large multipart uploads we'll switch to streaming
-        # the request body too.
+        # Forward body verbatim. Read into memory once. Image edit clients send
+        # multipart uploads, so the app-level limit is raised above aiohttp's
+        # 1 MiB default.
         body = await request.read()
 
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
@@ -292,5 +292,6 @@ __all__ = [
     "run_server",
     "DEFAULT_HOST",
     "DEFAULT_PORT",
+    "DEFAULT_MAX_BODY_SIZE",
     "AIOHTTP_AVAILABLE",
 ]

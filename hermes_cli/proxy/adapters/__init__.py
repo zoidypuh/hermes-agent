@@ -15,7 +15,14 @@ from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 # the ``hermes proxy start --provider <name>`` CLI flag.
 ADAPTERS: Dict[str, Type[UpstreamAdapter]] = {
     "nous": NousPortalAdapter,
-    "xai": XAIGrokAdapter,
+    "xai-oauth": XAIGrokAdapter,
+}
+
+_ADAPTER_ALIASES: Dict[str, str] = {
+    "grok-oauth": "xai-oauth",
+    "x-ai-oauth": "xai-oauth",
+    "xai": "xai-oauth",
+    "xai-grok-oauth": "xai-oauth",
 }
 
 
@@ -26,8 +33,10 @@ def get_adapter(name: str) -> UpstreamAdapter:
         ValueError: if ``name`` is not a registered adapter.
     """
     key = (name or "").strip().lower()
+    key = _ADAPTER_ALIASES.get(key, key)
     if key not in ADAPTERS:
-        available = ", ".join(sorted(ADAPTERS)) or "(none)"
+        available_names = sorted(set(ADAPTERS) | set(_ADAPTER_ALIASES))
+        available = ", ".join(available_names) or "(none)"
         raise ValueError(
             f"Unknown proxy upstream provider: {name!r}. Available: {available}"
         )

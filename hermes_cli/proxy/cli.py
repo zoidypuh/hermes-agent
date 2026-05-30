@@ -17,6 +17,8 @@ from hermes_cli.proxy.server import (
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_PROVIDER = "nous"
+
 
 def _print_aiohttp_missing() -> None:
     print(
@@ -25,6 +27,25 @@ def _print_aiohttp_missing() -> None:
         "  pip install aiohttp",
         file=sys.stderr,
     )
+
+
+def _default_provider_from_config() -> str:
+    """Return ``proxy.provider`` from config.yaml, falling back to Nous."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+
+        configured = cfg_get(
+            load_config_readonly(),
+            "proxy",
+            "provider",
+            default=None,
+        )
+    except Exception as exc:  # pragma: no cover - defensive config fallback
+        logger.debug("proxy: failed to read proxy.provider config: %s", exc)
+        configured = None
+
+    provider = str(configured or "").strip()
+    return provider or _DEFAULT_PROVIDER
 
 
 def cmd_proxy_start(args: Any) -> int:
@@ -36,7 +57,7 @@ def cmd_proxy_start(args: Any) -> int:
         _print_aiohttp_missing()
         return 1
 
-    provider = getattr(args, "provider", None) or "nous"
+    provider = getattr(args, "provider", None) or _default_provider_from_config()
     try:
         adapter = get_adapter(provider)
     except ValueError as exc:
@@ -123,7 +144,7 @@ def cmd_proxy(args: Any) -> int:
         "OAuth-authenticated provider credentials to outbound requests.\n"
         "\n"
         "Subcommands:\n"
-        "  hermes proxy start [--provider nous|xai] [--host 127.0.0.1] [--port 8645]\n"
+        "  hermes proxy start [--provider nous|xai-oauth] [--host 127.0.0.1] [--port 8645]\n"
         "      Run the proxy in the foreground.\n"
         "  hermes proxy status\n"
         "      Show which upstream adapters are ready.\n"

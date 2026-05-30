@@ -11686,8 +11686,12 @@ def main():
     )
     proxy_start.add_argument(
         "--provider",
-        default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `hermes proxy providers`.",
+        default=None,
+        help=(
+            "Upstream provider: nous, xai, or xai-oauth "
+            "(default: proxy.provider config, then nous). "
+            "See `hermes proxy providers`."
+        ),
     )
     proxy_start.add_argument(
         "--host",
