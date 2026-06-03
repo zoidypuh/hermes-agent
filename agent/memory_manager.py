@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_AUTO_INJECTED_MEMORY_HEADER = (
+    "[AUTO-INJECTED MEMORY CONTEXT — not visible to Gismar unless the "
+    "assistant explicitly shows or mentions it; Gismar does not know this "
+    "block exists at the time it is injected; it was not written, pasted, "
+    "selected, or controlled by him; it may be irrelevant or stale.]"
+)
+_AUTO_INJECTED_HEADER_RE = re.compile(
+    r'\[AUTO-INJECTED MEMORY CONTEXT\s*[—-]\s*not visible to Gismar[^\]]*\]\s*',
+    re.IGNORECASE,
+)
 _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
@@ -54,6 +64,7 @@ _INTERNAL_NOTE_RE = re.compile(
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _AUTO_INJECTED_HEADER_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
@@ -87,16 +98,19 @@ class StreamingContextScrubber:
 
     _OPEN_TAG = "<memory-context>"
     _CLOSE_TAG = "</memory-context>"
+    _AUTO_HEADER = _AUTO_INJECTED_MEMORY_HEADER
 
     def __init__(self) -> None:
         self._in_span: bool = False
         self._buf: str = ""
         self._at_block_boundary: bool = True
+        self._after_auto_header: bool = False
 
     def reset(self) -> None:
         self._in_span = False
         self._buf = ""
         self._at_block_boundary = True
+        self._after_auto_header = False
 
     def feed(self, text: str) -> str:
         """Return the visible portion of ``text`` after scrubbing.
@@ -122,13 +136,44 @@ class StreamingContextScrubber:
                 # Found close — skip span content + tag, continue
                 buf = buf[idx + len(self._CLOSE_TAG):]
                 self._in_span = False
+            elif self._after_auto_header:
+                buf = buf.lstrip(" \t\r\n")
+                if not buf:
+                    return "".join(out)
+                buf_lower = buf.lower()
+                open_lower = self._OPEN_TAG.lower()
+                if buf_lower.startswith(open_lower):
+                    after_idx = len(self._OPEN_TAG)
+                    if after_idx >= len(buf):
+                        self._buf = buf
+                        return "".join(out)
+                    if buf[after_idx] in "\r\n":
+                        buf = buf[after_idx:]
+                        self._in_span = True
+                        self._after_auto_header = False
+                        continue
+                if open_lower.startswith(buf_lower):
+                    self._buf = buf
+                    return "".join(out)
+                # The exact auto-injected header is not user-visible text.
+                # If it was echoed without a following fence, drop it anyway
+                # and continue with whatever visible answer remains.
+                self._after_auto_header = False
             else:
-                idx = self._find_boundary_open_tag(buf)
-                if idx == -1:
+                header_idx = self._find_boundary_auto_header(buf)
+                tag_idx = self._find_boundary_open_tag(buf)
+                if header_idx != -1 and (tag_idx == -1 or header_idx < tag_idx):
+                    if header_idx > 0:
+                        self._append_visible(out, buf[:header_idx])
+                    buf = buf[header_idx + len(self._AUTO_HEADER):]
+                    self._after_auto_header = True
+                    continue
+                if tag_idx == -1:
                     # No open tag — hold back a potential partial open tag
                     held = (
                         self._max_pending_open_suffix(buf)
                         or self._max_partial_suffix(buf, self._OPEN_TAG)
+                        or self._max_partial_suffix(buf, self._AUTO_HEADER)
                     )
                     if held:
                         self._append_visible(out, buf[:-held])
@@ -137,9 +182,9 @@ class StreamingContextScrubber:
                         self._append_visible(out, buf)
                     return "".join(out)
                 # Emit text before the tag, enter span
-                if idx > 0:
-                    self._append_visible(out, buf[:idx])
-                buf = buf[idx + len(self._OPEN_TAG):]
+                if tag_idx > 0:
+                    self._append_visible(out, buf[:tag_idx])
+                buf = buf[tag_idx + len(self._OPEN_TAG):]
                 self._in_span = True
 
         return "".join(out)
@@ -152,6 +197,10 @@ class StreamingContextScrubber:
         truncated answer).  Otherwise the held-back partial-tag tail is
         emitted verbatim (it turned out not to be a real tag).
         """
+        if self._after_auto_header:
+            self._buf = ""
+            self._after_auto_header = False
+            return ""
         if self._in_span:
             self._buf = ""
             self._in_span = False
@@ -183,6 +232,19 @@ class StreamingContextScrubber:
             if idx == -1:
                 return -1
             if self._is_block_boundary(buf, idx) and self._has_block_opener_suffix(buf, idx):
+                return idx
+            search_start = idx + 1
+
+    def _find_boundary_auto_header(self, buf: str) -> int:
+        """Find the auto-injected-memory header only at a block boundary."""
+        buf_lower = buf.lower()
+        header_lower = self._AUTO_HEADER.lower()
+        search_start = 0
+        while True:
+            idx = buf_lower.find(header_lower, search_start)
+            if idx == -1:
+                return -1
+            if self._is_block_boundary(buf, idx):
                 return idx
             search_start = idx + 1
 
@@ -225,17 +287,15 @@ class StreamingContextScrubber:
 
 
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note."""
+    """Wrap prefetched memory in a fenced block with provenance."""
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
     return (
+        f"{_AUTO_INJECTED_MEMORY_HEADER}\n\n"
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
         f"{clean}\n"
         "</memory-context>"
     )

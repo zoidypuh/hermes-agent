@@ -6,7 +6,12 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 import json
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider, _LocalMem0Client, _load_config
+from plugins.memory.mem0 import (
+    Mem0MemoryProvider,
+    _LocalMem0Client,
+    _load_config,
+    _strict_memory_text_allowed,
+)
 
 
 class FakeClientV2:
@@ -37,6 +42,40 @@ class FakeClientV2:
 
     def add(self, messages, **kwargs):
         self.captured_add.append({"messages": messages, **kwargs})
+
+
+class TestStrictMemoryTextAllowed:
+    def test_rejects_operational_sensitive_media_residue(self):
+        assert _strict_memory_text_allowed(
+            "Do not store or inject folder paths, filenames, project progress, "
+            "or content descriptions for sensitive or explicit image/video generation workflows."
+        ) is False
+
+    def test_rejects_real_person_media_workflow_progress(self):
+        assert _strict_memory_text_allowed(
+            "Gismar's explicit real-person media workflow is in a local folder "
+            "and the next task is to resume asset sorting."
+        ) is False
+
+    def test_allows_sanitized_grok_moderation_anchor(self):
+        assert _strict_memory_text_allowed(
+            "Gismar felt foolish for bragging to Grok about bypassing its image/video moderation."
+        ) is True
+
+    def test_allows_sanitized_venice_provider_anchor(self):
+        assert _strict_memory_text_allowed(
+            "Gismar learned that Venice hosts Grok image generation and believes it appears much less restricted than Grok's own private mode."
+        ) is True
+
+    def test_allows_non_sensitive_image_workflow_anchor(self):
+        assert _strict_memory_text_allowed(
+            "For Gismar's Comfy media workflow, OpenAI GPT Image endpoints are a viable image-only route."
+        ) is True
+
+    def test_explicitly_does_not_trigger_sensitive_media_guard(self):
+        assert _strict_memory_text_allowed(
+            "Memory policy for Mara: Mara may save useful durable facts without requiring Gismar to explicitly say save this."
+        ) is True
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +387,10 @@ class TestMem0FiltersV2:
         call = client.captured_add[0]
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
+        assert call["metadata"]["write_origin"] == "mem0_inference"
+        assert call["metadata"]["source_session_id"] == "s1"
+        assert call["metadata"]["source_user_turn"] == "user said this"
+        assert call["metadata"]["source_assistant_turn"] == "assistant replied"
 
     def test_sync_turn_strict_filter_writes_exact_memories_with_infer_false(self, monkeypatch):
         client = FakeClientV2()
@@ -377,6 +420,8 @@ class TestMem0FiltersV2:
         assert call["infer"] is False
         assert call["metadata"]["write_origin"] == "strict_turn_filter"
         assert call["metadata"]["source_session_id"] == "s1"
+        assert call["metadata"]["source_user_turn"] == "please remember high signal only"
+        assert call["metadata"]["source_assistant_turn"] == "ok"
 
     def test_sync_turn_strict_filter_writes_to_candidate_user_id(self, monkeypatch):
         client = FakeClientV2()
@@ -401,6 +446,26 @@ class TestMem0FiltersV2:
         assert call["user_id"] == "candidate"
         assert call["agent_id"] == "hermes"
         assert call["infer"] is False
+        assert call["metadata"]["source_user_turn"] == "please remember clean memory"
+        assert call["metadata"]["source_assistant_turn"] == "ok"
+
+    def test_sync_turn_metadata_truncates_source_turns(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        provider._inference_enabled = True
+        long_user = "u" * 5000
+        long_assistant = "a" * 5001
+
+        provider.sync_turn(long_user, long_assistant, session_id="s1")
+        provider._sync_thread.join(timeout=2)
+
+        metadata = client.captured_add[0]["metadata"]
+        assert len(metadata["source_user_turn"]) == 4000
+        assert len(metadata["source_assistant_turn"]) == 4000
+        assert metadata["source_user_turn_truncated"] is True
+        assert metadata["source_assistant_turn_truncated"] is True
+        assert metadata["source_user_turn_original_chars"] == 5000
+        assert metadata["source_assistant_turn_original_chars"] == 5001
 
     def test_sync_turn_strict_filter_skips_when_no_memory(self, monkeypatch):
         client = FakeClientV2()
