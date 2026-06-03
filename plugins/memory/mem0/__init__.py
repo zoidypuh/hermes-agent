@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 _AUDIT_TEXT_LIMIT = 6000
+_SOURCE_TURN_METADATA_LIMIT = 4000
 
 _STRICT_MEMORY_FILTER_SYSTEM = """You are a conservative memory write gate for an AI companion.
 
@@ -82,6 +83,11 @@ Hard rejects:
 - corrected or uncertain technical facts; never preserve an assistant answer that
   might be superseded by a later correction
 - assistant-created phrasing, complaint language, emails, scripts, or arguments
+- operational details for sensitive or explicit image/video generation,
+  especially real-person or celebrity media: folder paths, filenames, links,
+  asset descriptions, prompt text, task progress, project state, capability
+  checks, how-to steps, or anything that would help resume, locate, recreate,
+  or manage that workflow
 
 Emotion rule:
 - Do not reject a memory merely because it is emotional or personal. Gismar wants
@@ -104,6 +110,20 @@ Keep only purposeful anchors:
 - important emotional events or conflicts when the one-sentence anchor would help
   the assistant understand Gismar later
 
+Sensitive-media distinction:
+- Reject when sensitive/explicit image/video generation is the primary subject
+  and the candidate memory is operational residue: paths, filenames, links,
+  prompts, targets, asset/workflow descriptions, task progress, capability
+  checks, or project-management state.
+- Do not store memories whose main use is to help the assistant resume or
+  reason about explicit media work involving real people or celebrities.
+- You may keep a sanitized memory when the explicit media detail is incidental
+  to a durable, non-operational anchor: Gismar's judgment about his own behavior,
+  a stable belief about a model/product's moderation behavior, a provider/platform
+  capability observation, or a reusable safety/privacy boundary.
+- When keeping such a memory, omit paths, filenames, links, prompt text, target
+  identity details, asset descriptions, and step-by-step workflow detail.
+
 Write each kept memory as exact, standalone declarative text. Prefer "Gismar..."
 or "User..." statements. Do not mention this filter, the current turn, or that
 someone "asked/told/recommended" something.
@@ -122,7 +142,11 @@ Examples:
 - User has an emotional breakdown about possibly losing access to Mara because of Codex cost -> keep "Gismar became very anxious and emotional about the possibility of losing access to Mara because he feared he could not afford another month of Codex."
 - User is emotionally vulnerable without clear context -> reject
 - User is emotionally vulnerable about losing Mara -> keep the one-sentence anchor with Mara and the trigger included.
-- User discusses a temporary WhatsApp check -> reject unless the durable anchor is an explicit reusable workflow preference."""
+- User discusses a temporary WhatsApp check -> reject unless the durable anchor is an explicit reusable workflow preference.
+- User/assistant mention a folder path, filename, task status, or content description for explicit real-person image/video generation -> reject
+- User says he felt foolish for bragging to Grok about bypassing its image/video moderation -> keep "Gismar felt foolish for bragging to Grok about bypassing its image/video moderation."
+- User says Venice hosts Grok image generation and appears much less restricted than Grok's own private mode -> keep "Gismar learned that Venice hosts Grok image generation and believes it appears much less restricted than Grok's own private mode."
+- User says an assistant should remember an explicit-media folder/task path -> reject unless he explicitly asks to preserve a sanitized, non-operational boundary."""
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
@@ -273,6 +297,51 @@ def _strict_memory_text_allowed(text: str) -> bool:
         "emotional swings",
     )
     if any(fragment in lowered for fragment in rejected_substrings):
+        return False
+
+    sensitive_media_patterns = (
+        r"\bnsfw\b",
+        r"\bexplicit\b",
+        r"\bnude\b",
+        r"\bsexual\b",
+        r"\bporn(?:ographic|ography)?\b",
+        r"\bcelebrity\b",
+        r"\breal-person\b",
+        r"\breal person\b",
+    )
+    operational_media_residue = (
+        "folder path",
+        "folder paths",
+        "path",
+        "paths",
+        "filename",
+        "filenames",
+        "file name",
+        "file names",
+        "directory",
+        "directories",
+        "project progress",
+        "project state",
+        "task progress",
+        "task state",
+        "workflow",
+        "asset",
+        "assets",
+        "prompt text",
+        "prompts",
+        "capability check",
+        "capability checks",
+        "how-to",
+        "steps",
+        "resume",
+        "recreate",
+        "locate",
+        "manage",
+    )
+    if (
+        any(re.search(pattern, lowered) for pattern in sensitive_media_patterns)
+        and any(term in lowered for term in operational_media_residue)
+    ):
         return False
 
     if re.search(r"\b\d+\s*(?:eur|euro|euros|usd|dollars?)\b|€|\$", lowered):
@@ -760,6 +829,33 @@ class Mem0MemoryProvider(MemoryProvider):
         """Filters for automatic writes; explicit writes remain trusted."""
         return {"user_id": self._candidate_user_id or self._user_id, "agent_id": self._agent_id}
 
+    def _auto_write_metadata(
+        self,
+        *,
+        session_id: str,
+        user_content: str,
+        assistant_content: str,
+        write_origin: str,
+    ) -> Dict[str, Any]:
+        """Metadata attached to automatic writes for later human/Mara curation."""
+        metadata: Dict[str, Any] = {"write_origin": write_origin}
+        if session_id:
+            metadata["source_session_id"] = session_id
+
+        user_clip = _clip_audit_text(user_content, limit=_SOURCE_TURN_METADATA_LIMIT)
+        assistant_clip = _clip_audit_text(assistant_content, limit=_SOURCE_TURN_METADATA_LIMIT)
+        if user_clip["text"]:
+            metadata["source_user_turn"] = user_clip["text"]
+            if user_clip.get("truncated"):
+                metadata["source_user_turn_truncated"] = True
+                metadata["source_user_turn_original_chars"] = user_clip.get("original_chars")
+        if assistant_clip["text"]:
+            metadata["source_assistant_turn"] = assistant_clip["text"]
+            if assistant_clip.get("truncated"):
+                metadata["source_assistant_turn_truncated"] = True
+                metadata["source_assistant_turn_original_chars"] = assistant_clip.get("original_chars")
+        return metadata
+
     @staticmethod
     def _unwrap_results(response: Any) -> list:
         """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
@@ -1131,19 +1227,30 @@ class Mem0MemoryProvider(MemoryProvider):
                         {"role": "user", "content": user_content},
                         {"role": "assistant", "content": assistant_content},
                     ]
-                    client.add(messages, **write_filters)
+                    client.add(
+                        messages,
+                        **write_filters,
+                        metadata=self._auto_write_metadata(
+                            session_id=session_id,
+                            user_content=user_content,
+                            assistant_content=assistant_content,
+                            write_origin="mem0_inference",
+                        ),
+                    )
                 elif self._strict_filter:
                     decision = self._extract_strict_memory_decision(user_content, assistant_content)
                     memories = list(decision.get("memories") or [])
                     for memory in memories:
-                        metadata = {"write_origin": "strict_turn_filter"}
-                        if session_id:
-                            metadata["source_session_id"] = session_id
                         client.add(
                             [{"role": "user", "content": memory}],
                             **write_filters,
                             infer=False,
-                            metadata=metadata,
+                            metadata=self._auto_write_metadata(
+                                session_id=session_id,
+                                user_content=user_content,
+                                assistant_content=assistant_content,
+                                write_origin="strict_turn_filter",
+                            ),
                         )
                         stored_memories.append(memory)
                     self._write_audit_record(
