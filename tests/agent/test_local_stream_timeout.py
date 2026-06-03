@@ -7,8 +7,10 @@ kills during long prefill phases.
 """
 
 import os
-import pytest
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from agent.model_metadata import is_local_endpoint
 
@@ -71,6 +73,50 @@ class TestLocalStreamReadTimeout:
             if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 120.0
+
+    def test_proxy_provider_does_not_get_direct_local_relaxation(self):
+        from agent.chat_completion_helpers import _uses_direct_local_inference_endpoint
+
+        agent = SimpleNamespace(
+            base_url="http://127.0.0.1:8317/v1",
+            provider="cliproxy",
+        )
+
+        assert _uses_direct_local_inference_endpoint(agent) is False
+
+    def test_config_named_proxy_base_url_excludes_custom_provider(self, monkeypatch, tmp_path):
+        from agent.chat_completion_helpers import _uses_direct_local_inference_endpoint
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            """\
+providers:
+  cliproxy:
+    name: cliproxy
+    base_url: http://127.0.0.1:8317/v1
+""",
+            encoding="utf-8",
+        )
+        agent = SimpleNamespace(
+            base_url="http://127.0.0.1:8317/v1",
+            provider="custom",
+        )
+
+        assert _uses_direct_local_inference_endpoint(agent) is False
+
+    def test_direct_local_custom_provider_still_gets_relaxation(self, monkeypatch, tmp_path):
+        from agent.chat_completion_helpers import _uses_direct_local_inference_endpoint
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / ".env").write_text("", encoding="utf-8")
+        (tmp_path / "config.yaml").write_text("providers: {}\n", encoding="utf-8")
+        agent = SimpleNamespace(
+            base_url="http://127.0.0.1:11434/v1",
+            provider="custom",
+        )
+
+        assert _uses_direct_local_inference_endpoint(agent) is True
 
 
 class TestIsLocalEndpoint:

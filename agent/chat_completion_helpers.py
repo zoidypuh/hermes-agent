@@ -122,6 +122,49 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _uses_direct_local_inference_endpoint(agent) -> bool:
+    """Return True when local-endpoint timeout relaxation is appropriate.
+
+    A local URL can be either a direct local inference server (Ollama, vLLM,
+    llama.cpp) or a local proxy in front of a remote/provider-backed runtime.
+    Only the former should get long read timeouts and disabled stale-stream
+    detection.
+    """
+    base_url = str(getattr(agent, "base_url", "") or "")
+    if not base_url or not is_local_endpoint(base_url):
+        return False
+
+    provider = str(getattr(agent, "provider", "") or "").lower()
+    if "proxy" in provider:
+        return False
+
+    normalized_base_url = base_url.rstrip("/").lower()
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly() or {}
+        providers = config.get("providers", {})
+        if isinstance(providers, dict):
+            for provider_id, provider_config in providers.items():
+                if not isinstance(provider_config, dict):
+                    continue
+                configured_base_url = (
+                    str(provider_config.get("base_url") or "").rstrip("/").lower()
+                )
+                provider_name = (
+                    str(provider_config.get("name") or provider_id or "").lower()
+                )
+                if (
+                    configured_base_url == normalized_base_url
+                    and "proxy" in provider_name
+                ):
+                    return False
+    except Exception:
+        pass
+
+    return True
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -1680,7 +1723,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # prefill on large contexts before producing the first token.
             # Auto-increase the httpx read timeout unless the user explicitly
             # overrode HERMES_STREAM_READ_TIMEOUT.
-            if _stream_read_timeout == 120.0 and agent.base_url and is_local_endpoint(agent.base_url):
+            if _stream_read_timeout == 120.0 and _uses_direct_local_inference_endpoint(agent):
                 _stream_read_timeout = _base_timeout
                 logger.debug(
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
@@ -2277,6 +2320,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     # Provider-configured stale timeout takes priority over env default.
     _cfg_stale = get_provider_stale_timeout(agent.provider, agent.model)
+    _env_stale_timeout_is_explicit = "HERMES_STREAM_STALE_TIMEOUT" in os.environ
     if _cfg_stale is not None:
         _stream_stale_timeout_base = _cfg_stale
     else:
@@ -2284,7 +2328,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-    if _stream_stale_timeout_base == 180.0 and agent.base_url and is_local_endpoint(agent.base_url):
+    if (
+        _cfg_stale is None
+        and not _env_stale_timeout_is_explicit
+        and _stream_stale_timeout_base == 180.0
+        and _uses_direct_local_inference_endpoint(agent)
+    ):
         _stream_stale_timeout = float("inf")
         logger.debug("Local provider detected (%s) — stale stream timeout disabled", agent.base_url)
     else:

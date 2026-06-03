@@ -7,7 +7,9 @@ upstream prefix cache warm.  See ``hermes-agent-dev``'s
 ``references/self-improvement-loop.md`` for how the background-review
 fork inherits the cached prompt verbatim.
 
-Three tiers are joined with ``\\n\\n``:
+If ``SYSTEM.md`` exists in ``HERMES_HOME`` (the active profile directory), its
+contents replace the built-in cached system prompt entirely. Otherwise, three
+tiers are joined with ``\\n\\n``:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
@@ -46,7 +48,7 @@ from agent.prompt_builder import (
 def _ra():
     """Lazy reference to the ``run_agent`` module.
 
-    Helpers like ``load_soul_md``, ``build_environment_hints``,
+    Helpers like ``load_system_md``, ``load_soul_md``, ``build_environment_hints``,
     ``build_context_files_prompt``, ``build_nous_subscription_prompt``,
     ``build_skills_system_prompt`` and ``get_toolset_for_tool`` are
     imported into ``run_agent``'s namespace.  Many tests
@@ -360,6 +362,12 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     mid-session, which is the only way to keep upstream prompt caches
     warm across turns.
     """
+    custom_system_prompt = _ra().load_system_md()
+    if custom_system_prompt:
+        return "\n\n".join(
+            part for part in (custom_system_prompt, system_message) if part
+        )
+
     parts = build_system_prompt_parts(agent, system_message=system_message)
     return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
 

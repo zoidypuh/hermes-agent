@@ -11055,7 +11055,7 @@ class HermesCLI:
             if voice_output_prefers_switchboard():
                 result = send_to_mara_switchboard(text)
                 if not result.get("success"):
-                    _cprint(f"{_DIM}Mara Switchboard output failed: {result.get('error', 'unknown error')}{_RST}")
+                    _cprint(f"{_DIM}Switchboard output failed: {result.get('error', 'unknown error')}{_RST}")
                 return
 
             from tools.tts_tool import text_to_speech_tool
