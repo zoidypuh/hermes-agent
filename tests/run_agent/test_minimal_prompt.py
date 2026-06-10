@@ -30,7 +30,7 @@ def test_minimal_prompt_omits_generic_runtime_bloat(monkeypatch, tmp_path):
     prompt = agent._build_system_prompt()
 
     assert "You are Hermes Agent" in prompt
-    assert "If the user asks about configuring" not in prompt
+    assert "Hermes itself — configuring" not in prompt
     assert "Conversation started:" not in prompt
     assert "Model: test/model" not in prompt
     assert "Provider: test-provider" not in prompt
@@ -41,7 +41,7 @@ def test_normal_prompt_keeps_runtime_guidance(monkeypatch, tmp_path):
 
     prompt = agent._build_system_prompt()
 
-    assert "If the user asks about configuring" in prompt
+    assert "Hermes itself — configuring" in prompt
     assert "Conversation started:" in prompt
     assert "Model: test/model" in prompt
     assert "Provider: test-provider" in prompt

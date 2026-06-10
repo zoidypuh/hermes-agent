@@ -1468,8 +1468,8 @@ def init_agent(
 
     # Select context engine: config-driven (like memory providers).
     # 1. Check config.yaml context.engine setting
-    # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
-    # 3. Check general plugin system (user-installed plugins)
+    # 2. Check general plugin system (user-installed plugins)
+    # 3. Check plugins/context_engine/<name>/ directory (repo-shipped)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
     _engine_name = "compressor"  # default
@@ -1480,22 +1480,24 @@ def init_agent(
         pass
 
     if _engine_name != "compressor":
-        # Try loading from plugins/context_engine/<name>/
+        # Prefer the plugin-registered instance when present. Some engines
+        # also register operator commands; using a separate
+        # plugins/context_engine instance leaves those commands unbound.
         try:
-            from plugins.context_engine import load_context_engine
-            _selected_engine = load_context_engine(_engine_name)
-        except Exception as _ce_load_err:
-            _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
+            from hermes_cli.plugins import get_plugin_context_engine
+            _candidate = get_plugin_context_engine()
+            if _candidate and _candidate.name == _engine_name:
+                _selected_engine = _candidate
+        except Exception as _plugin_ce_err:
+            _ra().logger.debug("Context engine load from plugin registry: %s", _plugin_ce_err)
 
-        # Try general plugin system as fallback
+        # Try loading from plugins/context_engine/<name>/.
         if _selected_engine is None:
             try:
-                from hermes_cli.plugins import get_plugin_context_engine
-                _candidate = get_plugin_context_engine()
-                if _candidate and _candidate.name == _engine_name:
-                    _selected_engine = _candidate
-            except Exception:
-                pass
+                from plugins.context_engine import load_context_engine
+                _selected_engine = load_context_engine(_engine_name)
+            except Exception as _ce_load_err:
+                _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
 
         if _selected_engine is None:
             _ra().logger.warning(
