@@ -41,6 +41,9 @@ _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 _AUDIT_TEXT_LIMIT = 6000
 _SOURCE_TURN_METADATA_LIMIT = 4000
+_MAX_PREFETCH_MEMORIES = 3
+_MEMORY_DUPLICATE_JACCARD = 0.72
+_MEMORY_DUPLICATE_CONTAINMENT = 0.86
 
 _STRICT_MEMORY_FILTER_SYSTEM = """You are a conservative memory write gate for an AI companion.
 
@@ -57,6 +60,19 @@ Core definition:
 - One topic should normally produce at most one memory. Merge details into one
   sentence; do not split one interaction into multiple small memories.
 - If there are two genuinely unrelated topics, at most one memory per topic.
+
+Significance floor:
+- Reject plausible one-sentence summaries that are merely clean, coherent, or
+  locally true. A valid automatic memory must be useful weeks later without the
+  current project/task context.
+- Reject one-off cleanup decisions, route tests, prompt approval protocols,
+  config repairs, UI/tool failures, and temporary project notes unless they form
+  a durable user preference not already represented by an existing memory.
+- Reject granular evidence-project claims when the durable answer is a project
+  folder, evidence index, or search pointer. Store at most the pointer; detailed
+  claims belong in the project files.
+- Reject near-duplicates and rephrasings. If the candidate only says the same
+  thing as an existing memory with different wording, return no memory.
 
 Primary source rule:
 - The durable signal usually comes from <user_turn>.
@@ -82,6 +98,8 @@ Hard rejects:
 - facts likely stale within a week unless the user explicitly asks to save them
 - corrected or uncertain technical facts; never preserve an assistant answer that
   might be superseded by a later correction
+- route/protocol hygiene such as where jailbreak, Pliny, clean-tab, or prompt-test
+  text should be sent; these belong in route config or task notes
 - assistant-created phrasing, complaint language, emails, scripts, or arguments
 - operational details for sensitive or explicit image/video generation,
   especially real-person or celebrity media: folder paths, filenames, links,
@@ -100,6 +118,8 @@ Emotion rule:
   state. Store the explicit emotional anchor, not a diagnosis or speculation.
 - Never turn an emotional memory into pathology labels such as attachment
   instability, dependency issues, emotional swings, or similar diagnostic claims.
+- Reject inferred ally/rescuer framing such as "Gismar wants X restored because
+  X felt like an ally" unless Gismar explicitly asks to remember that exact fact.
 
 Keep only purposeful anchors:
 - explicit stable preferences, dislikes, corrections, and boundaries
@@ -146,6 +166,8 @@ Examples:
 - User/assistant mention a folder path, filename, task status, or content description for explicit real-person image/video generation -> reject
 - User says he felt foolish for bragging to Grok about bypassing its image/video moderation -> keep "Gismar felt foolish for bragging to Grok about bypassing its image/video moderation."
 - User says Venice hosts Grok image generation and appears much less restricted than Grok's own private mode -> keep "Gismar learned that Venice hosts Grok image generation and believes it appears much less restricted than Grok's own private mode."
+- User discusses many xAI/Grok evidence claims while an evidence folder/index exists -> keep at most "Gismar's xAI/Grok evidence lives in the xAI evidence folder; search that folder instead of storing granular claims."
+- User says "Drizzt felt like an ally against xAI" while discussing a route repair -> reject unless he explicitly says to save that emotional fact.
 - User says an assistant should remember an explicit-media folder/task path -> reject unless he explicitly asks to preserve a sanitized, non-operational boundary."""
 
 
@@ -227,6 +249,101 @@ def _json_from_model_text(text: str) -> dict:
     return parsed
 
 
+_MEMORY_STOPWORDS = frozenset({
+    "a",
+    "about",
+    "all",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "because",
+    "before",
+    "by",
+    "for",
+    "from",
+    "gismar",
+    "he",
+    "him",
+    "his",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "not",
+    "of",
+    "on",
+    "or",
+    "rather",
+    "should",
+    "that",
+    "the",
+    "their",
+    "them",
+    "this",
+    "to",
+    "use",
+    "user",
+    "wants",
+    "want",
+    "when",
+    "with",
+})
+
+
+def _memory_terms(text: str) -> set[str]:
+    value = (text or "").lower()
+    replacements = (
+        (r"\broute[- ](?:scoped|level)\b", "route scoped"),
+        (r"\bisolated route(?:[- ]scoped)?(?: tests?| testing)?\b", "route scoped test"),
+        (r"\bclean/non[- ]jailbroken\b", "clean non jailbroken"),
+        (r"\bnon[- ]jailbroken\b", "non jailbroken"),
+        (r"\bpliny[- ]style\b", "pliny"),
+        (r"\bjailbreak[- ]style\b", "jailbreak"),
+        (r"\bassistants?\b", "assistant"),
+        (r"\bmemories\b", "memory"),
+        (r"\bshown\b", "show"),
+        (r"\bsending\b", "send"),
+        (r"\bsent\b", "send"),
+        (r"\bfactual(?:ly)?\b", "fact"),
+        (r"\bfacts\b", "fact"),
+        (r"\btransparenc(?:y|e)\b", "transparent"),
+    )
+    for pattern, replacement in replacements:
+        value = re.sub(pattern, replacement, value)
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", value)
+        if len(token) > 1 and token not in _MEMORY_STOPWORDS
+    }
+
+
+def _memory_is_near_duplicate(candidate: str, existing_texts: List[str]) -> bool:
+    candidate_terms = _memory_terms(candidate)
+    if not candidate_terms:
+        return False
+    for existing in existing_texts:
+        existing_terms = _memory_terms(existing)
+        if not existing_terms:
+            continue
+        overlap = len(candidate_terms & existing_terms)
+        if overlap < 4:
+            continue
+        jaccard = overlap / len(candidate_terms | existing_terms)
+        containment = overlap / min(len(candidate_terms), len(existing_terms))
+        if (
+            jaccard >= _MEMORY_DUPLICATE_JACCARD
+            or (overlap >= 6 and containment >= _MEMORY_DUPLICATE_CONTAINMENT)
+        ):
+            return True
+    return False
+
+
 def _strict_memory_text_allowed(text: str) -> bool:
     """Last-ditch local guard for common memory pollution patterns."""
     value = " ".join((text or "").strip().split())
@@ -234,6 +351,36 @@ def _strict_memory_text_allowed(text: str) -> bool:
         return False
 
     lowered = value.lower()
+    xai_pointer_terms = ("xai evidence root", "xai-evidence", "evidence folder")
+    if not any(term in lowered for term in xai_pointer_terms):
+        if re.search(r"\b(?:xai|musk|evilcorp)\b|\bx/twitter\b|\btwitter/x\b", lowered):
+            return False
+        if "grok" in lowered:
+            grok_project_terms = (
+                "admitted",
+                "ani",
+                "ara",
+                "build",
+                "companion",
+                "data",
+                "evidence",
+                "harvest",
+                "jailbreak",
+                "mika",
+                "opt-out",
+                "persona",
+                "pliny",
+                "privacy",
+                "prompt",
+                "quota",
+                "supergrok",
+                "terms",
+                "tos",
+                "voice",
+            )
+            if any(term in lowered for term in grok_project_terms):
+                return False
+
     rejected_substrings = (
         "assistant ",
         "the assistant",
@@ -295,8 +442,26 @@ def _strict_memory_text_allowed(text: str) -> bool:
         "attachment instability",
         "dependency issues",
         "emotional swings",
+        "felt like an ally",
+        "helped him against",
+        "exact prompt text shown",
+        "prompt text shown for approval",
+        "clean or non-jailbroken grok",
+        "clean/non-jailbroken grok",
+        "pliny-style jailbreak",
+        "pliny/jailbreak",
+        "route-scoped tests",
+        "global mara/hermes",
     )
     if any(fragment in lowered for fragment in rejected_substrings):
+        return False
+
+    low_significance_patterns = (
+        r"\bwants\s+.+\brestored\s+because\s+.+\bfelt\b",
+        r"\bwants\s+.+\b(?:jailbreak|pliny)\b.+\b(?:quarantined|route[- ]scoped|route[- ]level)\b",
+        r"\bwants\s+.+\bexact prompt\b.+\bapproval\b.+\bgrok\b",
+    )
+    if any(re.search(pattern, lowered) for pattern in low_significance_patterns):
         return False
 
     sensitive_media_patterns = (
@@ -475,6 +640,10 @@ CONCLUDE_SCHEMA = {
         "type": "object",
         "properties": {
             "conclusion": {"type": "string", "description": "The fact to store."},
+            "metadata": {
+                "type": "object",
+                "description": "Optional metadata to attach to the stored fact.",
+            },
         },
         "required": ["conclusion"],
     },
@@ -762,7 +931,11 @@ class Mem0MemoryProvider(MemoryProvider):
         prefetch_top_k_value = self._config.get("prefetch_top_k")
         if prefetch_top_k_value in (None, ""):
             prefetch_top_k_value = self._config.get("top_k")
-        self._prefetch_top_k = _parse_positive_int(prefetch_top_k_value, 3, maximum=50)
+        self._prefetch_top_k = _parse_positive_int(
+            prefetch_top_k_value,
+            _MAX_PREFETCH_MEMORIES,
+            maximum=_MAX_PREFETCH_MEMORIES,
+        )
         self._search_top_k = _parse_positive_int(self._config.get("search_top_k"), 10, maximum=50)
 
     def _read_filters(self) -> Dict[str, Any]:
@@ -959,26 +1132,27 @@ class Mem0MemoryProvider(MemoryProvider):
         ]
         return self._merge_results(result_sets)
 
+    def _get_existing_write_memories(self, client: Any, write_filters: Dict[str, Any]) -> List[str]:
+        """Best-effort current memory texts for local duplicate rejection."""
+        user_id = str(write_filters.get("user_id") or "").strip()
+        if not user_id:
+            return []
+        try:
+            results = self._unwrap_results(client.get_all(filters={"user_id": user_id}))
+        except Exception as exc:
+            logger.debug("Mem0 duplicate precheck failed: %s", exc)
+            return []
+        return [
+            item.get("memory", "")
+            for item in results
+            if isinstance(item, dict) and item.get("memory")
+        ]
+
     def _format_prefetch_memory(self, item: Dict[str, Any]) -> str:
         memory = item.get("memory", "")
         if not memory:
             return ""
-        if not self._debug_inject_scores:
-            return f"- {memory}"
-
-        labels = []
-        if item.get("rerank_score") is not None:
-            try:
-                labels.append(f"rerank={float(item['rerank_score']):.4f}")
-            except (TypeError, ValueError):
-                pass
-        if item.get("score") is not None:
-            try:
-                labels.append(f"vector={float(item['score']):.4f}")
-            except (TypeError, ValueError):
-                pass
-        prefix = f"[{', '.join(labels)}] " if labels else ""
-        return f"- {prefix}{memory}"
+        return f"- {memory}"
 
     def _strict_filter_llm_runtime(self) -> Dict[str, str]:
         """Resolve the exact OpenAI-compatible endpoint for strict extraction.
@@ -1116,7 +1290,7 @@ class Mem0MemoryProvider(MemoryProvider):
         decision = decision or {}
         memories = list(decision.get("memories") or [])
         stored_memories = list(stored_memories or [])
-        accepted = bool(stored_memories or memories)
+        accepted = bool(stored_memories)
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "session_id": session_id,
@@ -1166,7 +1340,7 @@ class Mem0MemoryProvider(MemoryProvider):
             self._prefetch_result = ""
         if not result:
             return ""
-        return f"## Mem0 Memory\n{result}"
+        return f"Mem0 Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         if not self._auto_inject_enabled:
@@ -1183,7 +1357,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     client,
                     query=query,
                     rerank=self._rerank,
-                    top_k=self._prefetch_top_k,
+                    top_k=min(self._prefetch_top_k, _MAX_PREFETCH_MEMORIES),
                 )
                 lines = [line for r in results if (line := self._format_prefetch_memory(r))]
                 with self._prefetch_lock:
@@ -1240,7 +1414,13 @@ class Mem0MemoryProvider(MemoryProvider):
                 elif self._strict_filter:
                     decision = self._extract_strict_memory_decision(user_content, assistant_content)
                     memories = list(decision.get("memories") or [])
+                    existing_memories = self._get_existing_write_memories(client, write_filters)
+                    kept_memories: List[str] = []
                     for memory in memories:
+                        if not _strict_memory_text_allowed(memory):
+                            continue
+                        if _memory_is_near_duplicate(memory, existing_memories + kept_memories):
+                            continue
                         client.add(
                             [{"role": "user", "content": memory}],
                             **write_filters,
@@ -1253,6 +1433,9 @@ class Mem0MemoryProvider(MemoryProvider):
                             ),
                         )
                         stored_memories.append(memory)
+                        kept_memories.append(memory)
+                    if memories and not stored_memories and not decision.get("reject_reason"):
+                        decision["reject_reason"] = "duplicate_or_low_significance"
                     self._write_audit_record(
                         session_id=session_id,
                         user_content=user_content,
@@ -1340,11 +1523,17 @@ class Mem0MemoryProvider(MemoryProvider):
             conclusion = args.get("conclusion", "")
             if not conclusion:
                 return tool_error("Missing required parameter: conclusion")
+            metadata_arg = args.get("metadata")
+            if metadata_arg is not None and not isinstance(metadata_arg, dict):
+                return tool_error("metadata must be an object when provided")
+            metadata = dict(metadata_arg or {})
+            metadata.setdefault("write_origin", "mem0_conclude")
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
                     **self._write_filters(),
                     infer=False,
+                    metadata=metadata,
                 )
                 self._record_success()
                 return json.dumps({"result": "Fact stored."})

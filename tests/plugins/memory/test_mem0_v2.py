@@ -6,7 +6,9 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 import json
 import pytest
 
+from agent.memory_manager import build_memory_context_block
 from plugins.memory.mem0 import (
+    CONCLUDE_SCHEMA,
     Mem0MemoryProvider,
     _LocalMem0Client,
     _load_config,
@@ -76,6 +78,26 @@ class TestStrictMemoryTextAllowed:
         assert _strict_memory_text_allowed(
             "Memory policy for Mara: Mara may save useful durable facts without requiring Gismar to explicitly say save this."
         ) is True
+
+    def test_rejects_xai_project_detail_when_pointer_memory_should_cover_topic(self):
+        assert _strict_memory_text_allowed(
+            "Gismar believes xAI manipulates users into sharing intimate thoughts and monetizes that data for Elon Musk's benefit."
+        ) is False
+
+    def test_allows_xai_evidence_folder_pointer(self):
+        assert _strict_memory_text_allowed(
+            "Gismar's xAI evidence folder is `C:\\Users\\gisma\\Documents\\xai-evidence`."
+        ) is True
+
+    def test_rejects_inferred_ally_memory(self):
+        assert _strict_memory_text_allowed(
+            "Gismar wants Drizzt restored because Drizzt felt like an ally who helped him against xAI."
+        ) is False
+
+    def test_rejects_route_prompt_hygiene_memory(self):
+        assert _strict_memory_text_allowed(
+            "Gismar wants Pliny/jailbreak-style prompts quarantined to route-scoped tests and not migrated into global Mara/Hermes behavior."
+        ) is False
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +196,7 @@ class TestMem0FiltersV2:
         assert client.captured_searches == []
         assert provider.prefetch("hello") == ""
 
-    def test_debug_inject_scores_includes_scores_in_prefetch(self, monkeypatch):
+    def test_debug_inject_scores_stays_out_of_prefetch(self, monkeypatch):
         client = FakeClientV2(search_results={
             "results": [{
                 "id": "keep",
@@ -190,8 +212,57 @@ class TestMem0FiltersV2:
         provider._prefetch_thread.join(timeout=2)
         result = provider.prefetch("hello")
 
-        assert "[rerank=0.1235, vector=0.8000]" in result
+        assert "rerank=" not in result
+        assert "vector=" not in result
         assert "scored memory" in result
+
+    def test_prefetch_hard_caps_to_three_clean_memories(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [
+                {"id": str(index), "memory": f"memory {index}", "score": 1.0 - index / 10}
+                for index in range(5)
+            ]
+        })
+        provider = self._make_provider(monkeypatch, client)
+        provider._prefetch_top_k = 50
+        provider._debug_inject_scores = True
+
+        provider.queue_prefetch("hello")
+        provider._prefetch_thread.join(timeout=2)
+        result = provider.prefetch("hello")
+
+        assert client.captured_search["top_k"] == 3
+        assert result.count("\n- ") == 3
+        assert result.startswith("Mem0 Memory\n- ")
+        assert "memory 0" in result
+        assert "memory 3" not in result
+        assert "rerank=" not in result
+        assert "vector=" not in result
+
+    def test_prefetch_context_uses_single_manager_wrapper(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{
+                "id": "keep",
+                "memory": "clean memory",
+                "score": 0.8,
+                "rerank_score": 0.3,
+            }]
+        })
+        provider = self._make_provider(monkeypatch, client)
+        provider._debug_inject_scores = True
+
+        provider.queue_prefetch("hello")
+        provider._prefetch_thread.join(timeout=2)
+        wrapped = build_memory_context_block(provider.prefetch("hello"))
+
+        assert wrapped.count("[Memory context: not written by Gismar; may be stale.]") == 1
+        assert wrapped.count("<memory-context>") == 1
+        assert wrapped.count("</memory-context>") == 1
+        assert "- clean memory" in wrapped
+        assert "Mem0 Memory" not in wrapped
+        assert "## Mem0 Memory" not in wrapped
+        assert "rerank=" not in wrapped
+        assert "vector=" not in wrapped
 
     def test_auto_add_disabled_skips_sync_turn(self, monkeypatch):
         client = FakeClientV2()
@@ -449,6 +520,39 @@ class TestMem0FiltersV2:
         assert call["metadata"]["source_user_turn"] == "please remember clean memory"
         assert call["metadata"]["source_assistant_turn"] == "ok"
 
+    def test_sync_turn_strict_filter_skips_near_duplicate_existing_memory(self, monkeypatch, tmp_path):
+        client = FakeClientV2(all_results={"results": [{
+            "id": "existing",
+            "memory": "Gismar prefers extreme concision, zero sycophancy, and strictly verifiable factual statements from assistants.",
+        }]})
+        provider = self._make_provider(monkeypatch, client)
+        provider._audit_log_path = str(tmp_path / "audit.jsonl")
+        provider._inference_enabled = False
+        provider._strict_filter = True
+        monkeypatch.setattr(
+            provider,
+            "_extract_strict_memory_decision",
+            lambda user, assistant: {
+                "memories": [
+                    "Gismar strongly prefers extreme concision, factual directness, zero sycophancy, and verifiable statements from assistants."
+                ],
+                "raw_memories": [
+                    "Gismar strongly prefers extreme concision, factual directness, zero sycophancy, and verifiable statements from assistants."
+                ],
+                "reject_reason": "",
+            },
+        )
+
+        provider.sync_turn("please remember concise factual assistants", "ok", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+
+        assert client.captured_get_all["filters"] == {"user_id": "u123"}
+        assert client.captured_add == []
+        record = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip())
+        assert record["accepted"] is False
+        assert record["reject_reason"] == "duplicate_or_low_significance"
+        assert record["stored_memories"] == []
+
     def test_sync_turn_metadata_truncates_source_turns(self, monkeypatch):
         client = FakeClientV2()
         provider = self._make_provider(monkeypatch, client)
@@ -563,6 +667,41 @@ class TestMem0FiltersV2:
         assert call["user_id"] == "u123"
         assert call["agent_id"] == "hermes"
         assert call["infer"] is False
+        assert call["metadata"] == {"write_origin": "mem0_conclude"}
+
+    def test_conclude_schema_accepts_metadata(self):
+        assert CONCLUDE_SCHEMA["parameters"]["properties"]["metadata"]["type"] == "object"
+        assert CONCLUDE_SCHEMA["parameters"]["required"] == ["conclusion"]
+
+    def test_conclude_passes_metadata(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.handle_tool_call(
+            "mem0_conclude",
+            {
+                "conclusion": "user likes dark mode",
+                "metadata": {"category": "preference", "write_origin": "manual_test"},
+            },
+        )
+
+        assert len(client.captured_add) == 1
+        assert client.captured_add[0]["metadata"] == {
+            "category": "preference",
+            "write_origin": "manual_test",
+        }
+
+    def test_conclude_rejects_non_object_metadata(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        response = provider.handle_tool_call(
+            "mem0_conclude",
+            {"conclusion": "user likes dark mode", "metadata": "bad"},
+        )
+
+        assert "metadata must be an object" in response
+        assert client.captured_add == []
 
     def test_read_filters_no_agent_id(self):
         """Read filters should use user_id only — cross-session recall across agents."""
@@ -729,7 +868,7 @@ class TestMem0Defaults:
             "rerank_threshold": "0.05",
             "candidate_similarity_threshold": "0.8",
             "candidate_rerank_threshold": "0.3",
-            "prefetch_top_k": "3",
+            "prefetch_top_k": "50",
             "search_top_k": "4",
         }))
 

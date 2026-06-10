@@ -798,12 +798,21 @@ class TestMemoryContextFencing:
         result = build_memory_context_block(
             "## Holographic Memory\n- [0.8] user likes dark mode"
         )
-        assert result.startswith("[AUTO-INJECTED MEMORY CONTEXT")
-        assert "not visible to Gismar" in result
-        assert "not written, pasted, selected, or controlled by him" in result
+        assert result.startswith("[Memory context: not written by Gismar; may be stale.]")
         assert "<memory-context>" in result
         assert result.rstrip().endswith("</memory-context>")
         assert "user likes dark mode" in result
+
+    def test_build_memory_context_block_caps_to_three_lines(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block(
+            "Mem0 Memory\n- one\n- two\n- three\n- four"
+        )
+        assert "Mem0 Memory" not in result
+        assert "- one" in result
+        assert "- two" in result
+        assert "- three" in result
+        assert "- four" not in result
 
     def test_build_memory_context_block_empty_input(self):
         from agent.memory_manager import build_memory_context_block

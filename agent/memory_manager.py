@@ -41,16 +41,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
-_AUTO_INJECTED_MEMORY_HEADER = (
-    "[AUTO-INJECTED MEMORY CONTEXT — not visible to Gismar unless the "
-    "assistant explicitly shows or mentions it; Gismar does not know this "
-    "block exists at the time it is injected; it was not written, pasted, "
-    "selected, or controlled by him; it may be irrelevant or stale.]"
-)
+_AUTO_INJECTED_MEMORY_HEADER = "[Memory context: not written by Gismar; may be stale.]"
 _AUTO_INJECTED_HEADER_RE = re.compile(
-    r'\[AUTO-INJECTED MEMORY CONTEXT\s*[—-]\s*not visible to Gismar[^\]]*\]\s*',
+    r'(?:\[AUTO-INJECTED MEMORY CONTEXT\s*[—-][^\]]*\]|\[Memory context:\s*not written by Gismar;\s*may be stale\.\])\s*',
     re.IGNORECASE,
 )
+_MAX_CONTEXT_BODY_LINES = 3
+_CONTEXT_HEADING_RE = re.compile(r'^\s*(?:#{1,6}\s*)?(?:Mem0 Memory|Memory Context|Memories|Honcho Context)\s*:?\s*$', re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
     r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
     re.IGNORECASE,
@@ -286,15 +283,31 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._at_block_boundary and text.strip() == ""
 
 
+def _compact_context_lines(text: str, *, max_lines: int = _MAX_CONTEXT_BODY_LINES) -> str:
+    """Keep only the first few meaningful memory lines, dropping provider headings."""
+    lines: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line or _CONTEXT_HEADING_RE.match(line):
+            continue
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return "\n".join(lines)
+
+
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with provenance."""
+    """Wrap prefetched memory in a short fenced block with provenance."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
+    sanitized = sanitize_context(raw_context)
+    if sanitized != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    clean = _compact_context_lines(sanitized)
+    if not clean:
+        return ""
     return (
-        f"{_AUTO_INJECTED_MEMORY_HEADER}\n\n"
+        f"{_AUTO_INJECTED_MEMORY_HEADER}\n"
         "<memory-context>\n"
         f"{clean}\n"
         "</memory-context>"
