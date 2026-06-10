@@ -1047,6 +1047,18 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_system_md_replaces_built_in_prompt(self, agent):
+        with patch("run_agent.load_system_md", return_value="CUSTOM SYSTEM"):
+            prompt = agent._build_system_prompt()
+
+        assert prompt == "CUSTOM SYSTEM"
+
+    def test_system_md_keeps_explicit_system_message(self, agent):
+        with patch("run_agent.load_system_md", return_value="CUSTOM SYSTEM"):
+            prompt = agent._build_system_prompt(system_message="Runtime addition")
+
+        assert prompt == "CUSTOM SYSTEM\n\nRuntime addition"
+
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
         with (
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),

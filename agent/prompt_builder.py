@@ -1399,7 +1399,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
 
 # =========================================================================
-# Context files (SOUL.md, AGENTS.md, .cursorrules)
+# Context files (SYSTEM.md, SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
@@ -1412,6 +1412,32 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     tail = content[-tail_chars:]
     marker = f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of {len(content)} chars. Use file tools to read the full file.]\n\n"
     return head + marker + tail
+
+
+def load_system_md() -> Optional[str]:
+    """Load SYSTEM.md from HERMES_HOME as a full system prompt override.
+
+    Unlike SOUL.md, which only replaces the identity block, SYSTEM.md replaces
+    the entire cached system prompt assembled by Hermes. This is intentionally
+    profile-local because HERMES_HOME points at the active profile directory.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading SYSTEM.md: %s", e)
+
+    system_path = get_hermes_home() / "SYSTEM.md"
+    if not system_path.exists():
+        return None
+    try:
+        content = system_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        return _truncate_content(content, "SYSTEM.md")
+    except Exception as e:
+        logger.debug("Could not read SYSTEM.md from %s: %s", system_path, e)
+        return None
 
 
 def load_soul_md() -> Optional[str]:
