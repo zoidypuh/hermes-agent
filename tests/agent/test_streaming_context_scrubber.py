@@ -6,7 +6,11 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.memory_manager import (
+    StreamingContextScrubber,
+    _AUTO_INJECTED_MEMORY_HEADER,
+    sanitize_context,
+)
 
 
 class TestStreamingContextScrubberBasics:
@@ -67,6 +71,43 @@ class TestStreamingContextScrubberBasics:
         assert "System note" not in out
         assert "Honcho Context" not in out
         assert "stale memory" not in out
+
+    def test_auto_injected_header_and_block_are_stripped(self):
+        """The current Mem0 wrapper has a provenance header before the fence."""
+        s = StreamingContextScrubber()
+        leaked = (
+            f"{_AUTO_INJECTED_MEMORY_HEADER}\n\n"
+            "<memory-context>\n"
+            "## Mem0 Memory\n"
+            "stale memory\n"
+            "</memory-context>\n\nVisible answer"
+        )
+        out = s.feed(leaked) + s.flush()
+        assert out == "\n\nVisible answer"
+        assert "AUTO-INJECTED" not in out
+        assert "stale memory" not in out
+
+    def test_auto_injected_header_split_across_chunks_is_stripped(self):
+        """The hidden header can be split before the memory fence arrives."""
+        s = StreamingContextScrubber()
+        deltas = [
+            _AUTO_INJECTED_MEMORY_HEADER[:45],
+            _AUTO_INJECTED_MEMORY_HEADER[45:] + "\n\n<memory",
+            "-context>\n## Mem0 Memory\n",
+            "stale memory\n",
+            "</memory-context>\n\nVisible answer",
+        ]
+        out = "".join(s.feed(d) for d in deltas) + s.flush()
+        assert out == "\n\nVisible answer"
+        assert "AUTO-INJECTED" not in out
+        assert "stale memory" not in out
+
+    def test_auto_injected_header_without_block_flushes_state(self):
+        """An orphan hidden header is dropped and must not taint later output."""
+        s = StreamingContextScrubber()
+        assert s.feed(_AUTO_INJECTED_MEMORY_HEADER) == ""
+        assert s.flush() == ""
+        assert s.feed("Visible answer") + s.flush() == "Visible answer"
 
     def test_open_tag_split_across_two_deltas(self):
         """The open tag itself arriving in two fragments."""
@@ -187,6 +228,16 @@ class TestSanitizeContextUnchanged:
         out = sanitize_context(leaked).strip()
         assert out == "Visible"
 
+    def test_auto_injected_header_and_whole_block_sanitized(self):
+        leaked = (
+            f"{_AUTO_INJECTED_MEMORY_HEADER}\n\n"
+            "<memory-context>\n"
+            "payload\n"
+            "</memory-context>\nVisible"
+        )
+        out = sanitize_context(leaked).strip()
+        assert out == "Visible"
+
 
 class TestStreamingContextScrubberCrossTurn:
     """A scrubber instance is reused across turns (per agent).  reset() must
@@ -235,8 +286,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
             out = build_memory_context_block(prewrapped)
 
         assert any("pre-wrapped" in rec.message for rec in caplog.records)
-        assert out.count("<memory-context>") == 1
-        assert out.count("</memory-context>") == 1
+        assert out == ""
 
     def test_clean_provider_output_does_not_warn(self, caplog):
         import logging
