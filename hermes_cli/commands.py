@@ -1692,9 +1692,6 @@ class SlashCommandAutoSuggest(AutoSuggest):
 
         # Only suggest for slash commands
         if not text.startswith("/"):
-            # Fall back to history for regular text
-            if self._history:
-                return self._history.get_suggestion(buffer, document)
             return None
 
         parts = text.split(maxsplit=1)
@@ -1724,9 +1721,6 @@ class SlashCommandAutoSuggest(AutoSuggest):
                     if sub.startswith(sub_lower) and sub != sub_lower:
                         return Suggestion(sub[len(sub_text):])
 
-        # Fall back to history
-        if self._history:
-            return self._history.get_suggestion(buffer, document)
         return None
 
 

@@ -737,6 +737,21 @@ class TestGhostText:
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
 
+    def test_history_fallback_is_not_called(self):
+        """Avoid scanning large shared history during interactive suggestions."""
+
+        class ExplodingHistorySuggest:
+            def get_suggestion(self, buffer, document):
+                raise AssertionError("history fallback should not run")
+
+        suggest = SlashCommandAutoSuggest(history_suggest=ExplodingHistorySuggest())
+
+        class FakeBuffer:
+            pass
+
+        assert suggest.get_suggestion(FakeBuffer(), Document("hello")) is None
+        assert suggest.get_suggestion(FakeBuffer(), Document("/unknown anything")) is None
+
 
 # ---------------------------------------------------------------------------
 # Telegram command name sanitization

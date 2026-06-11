@@ -11702,9 +11702,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return cli_ref._get_tui_prompt_fragments()
 
         # Create the input area with multiline (Alt+Enter), autocomplete, and paste handling
-        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-
-
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
@@ -11721,7 +11718,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             completer=_completer,
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(
-                history_suggest=AutoSuggestFromHistory(),
                 completer=_completer,
             ),
         )
