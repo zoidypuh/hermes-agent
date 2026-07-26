@@ -857,7 +857,7 @@ def get_toolset_for_tool(*args, **kwargs):
 
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import build_welcome_banner
-from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
+from hermes_cli.commands import BoundedHistoryAutoSuggest, SlashCommandCompleter, SlashCommandAutoSuggest
 
 
 def get_all_toolsets(*args, **kwargs):
@@ -14216,7 +14216,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return cli_ref._get_tui_prompt_fragments()
 
         # Create the input area with multiline (Alt+Enter), autocomplete, and paste handling
-        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
 
 
@@ -14225,6 +14224,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             command_filter=cli_ref._command_available,
             skill_bundles_provider=lambda: get_skill_bundles(),
         )
+        _auto_suggest = None
+        if os.environ.get("HERMES_ENABLE_INLINE_AUTOSUGGEST", "").lower() in {"1", "true", "yes", "on"}:
+            _history_suggest_limit = 1000
+            try:
+                _history_suggest_limit = int(os.environ.get("HERMES_HISTORY_AUTOSUGGEST_LIMIT", "1000"))
+            except ValueError:
+                _history_suggest_limit = 1000
+            _auto_suggest = SlashCommandAutoSuggest(
+                history_suggest=BoundedHistoryAutoSuggest(limit=_history_suggest_limit),
+                completer=_completer,
+            )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -14241,10 +14251,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the UI event loop, keeping typing responsive.
             completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
-            auto_suggest=SlashCommandAutoSuggest(
-                history_suggest=AutoSuggestFromHistory(),
-                completer=_completer,
-            ),
+            auto_suggest=_auto_suggest,
         )
         # Keep prompt_toolkit on its simple tempfile path. Setting
         # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,

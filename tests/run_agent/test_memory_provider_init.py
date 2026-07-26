@@ -165,3 +165,28 @@ def test_aiagent_forwards_warning_callback_to_cli_memory_provider():
     assert provider.init_kwargs["platform"] == "cli"
     assert provider.init_kwargs["warning_callback"] == agent._emit_warning
     assert provider.init_kwargs["status_callback"] == agent._emit_status
+
+
+def test_configured_memory_provider_names_legacy_provider_only():
+    from agent.agent_init import _configured_memory_provider_names
+
+    assert _configured_memory_provider_names({"provider": "mem0"}) == ["mem0"]
+
+
+def test_configured_memory_provider_names_combines_dedupes_and_preserves_order():
+    from agent.agent_init import _configured_memory_provider_names
+
+    config = {
+        "provider": "mem0",
+        "providers": ["mem0", "hindsight", "built-in", "hindsight"],
+    }
+
+    assert _configured_memory_provider_names(config) == ["mem0", "hindsight"]
+
+
+def test_configured_memory_provider_names_accepts_csv_list():
+    from agent.agent_init import _configured_memory_provider_names
+
+    config = {"providers": " mem0, hindsight, none, mem0 "}
+
+    assert _configured_memory_provider_names(config) == ["mem0", "hindsight"]

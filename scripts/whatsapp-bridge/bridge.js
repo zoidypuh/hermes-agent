@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, appendFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -104,6 +104,14 @@ const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+// Extra read/watch allowlist for business chats while staying in self-chat mode.
+// Default includes Naturgy Argentina support so the bridge can queue replies
+// without opening WhatsApp Web history. Override with WHATSAPP_WATCH_CHATS.
+const WATCH_CHATS = new Set((process.env.WHATSAPP_WATCH_CHATS || '5491133060800@s.whatsapp.net,5491133060800@c.us,261349179392129@lid')
+  .split(',')
+  .map(s => normalizeWhatsAppId(s.trim()))
+  .filter(Boolean));
+const WATCH_LOG_FILE = process.env.WHATSAPP_WATCH_LOG_FILE || path.join(SESSION_DIR, 'watched-messages.jsonl');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -238,6 +246,117 @@ function getContextInfo(messageContent) {
   return {};
 }
 
+function identifierNumber(value) {
+  return String(value || '')
+    .replace(/:.*@/, '@')
+    .replace(/@.*/, '')
+    .replace(/^\+/, '');
+}
+
+function chatAliasNumbers(value) {
+  const primary = identifierNumber(value);
+  const aliases = new Set(primary ? [primary] : []);
+  const queue = primary ? [primary] : [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const suffix of ['', '_reverse']) {
+      const filePath = path.join(SESSION_DIR, `lid-mapping-${current}${suffix}.json`);
+      if (!existsSync(filePath)) continue;
+      try {
+        const mapped = identifierNumber(JSON.parse(readFileSync(filePath, 'utf8')));
+        if (mapped && !aliases.has(mapped)) {
+          aliases.add(mapped);
+          queue.push(mapped);
+        }
+      } catch {}
+    }
+  }
+
+  return aliases;
+}
+
+function isSameChatId(a, b) {
+  const aAliases = chatAliasNumbers(a);
+  const bAliases = chatAliasNumbers(b);
+  for (const alias of aAliases) {
+    if (bAliases.has(alias)) return true;
+  }
+  return false;
+}
+
+function collectTextFragments(value, out = [], depth = 0) {
+  if (out.length >= 20 || depth > 6 || value == null) return out;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed && trimmed.length < 2000) out.push(trimmed);
+    return out;
+  }
+  if (typeof value !== 'object' || Buffer.isBuffer(value)) return out;
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextFragments(item, out, depth + 1);
+    return out;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (/^(jpegThumbnail|mediaKey|fileSha256|fileEncSha256|directPath|url)$/i.test(key)) continue;
+    collectTextFragments(item, out, depth + 1);
+  }
+  return out;
+}
+
+function summarizeMessage(msg) {
+  const chatId = msg?.key?.remoteJid || '';
+  const senderId = msg?.key?.participant || chatId;
+  const messageContent = getMessageContent(msg);
+  const keys = Object.keys(messageContent || {});
+  let body = '';
+  let hasMedia = false;
+  let mediaType = '';
+  let fileName = '';
+
+  if (messageContent?.conversation) {
+    body = messageContent.conversation;
+  } else if (messageContent?.extendedTextMessage?.text) {
+    body = messageContent.extendedTextMessage.text;
+  } else if (messageContent?.imageMessage) {
+    body = messageContent.imageMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'image';
+  } else if (messageContent?.videoMessage) {
+    body = messageContent.videoMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'video';
+  } else if (messageContent?.audioMessage || messageContent?.pttMessage) {
+    hasMedia = true;
+    mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
+  } else if (messageContent?.documentMessage) {
+    body = messageContent.documentMessage.caption || '';
+    hasMedia = true;
+    mediaType = 'document';
+    fileName = messageContent.documentMessage.fileName || '';
+  }
+
+  if (!body) {
+    body = Array.from(new Set(collectTextFragments(messageContent))).slice(0, 12).join(' | ');
+  }
+  if (hasMedia && !body) {
+    body = `[${mediaType} received]`;
+  }
+
+  return {
+    messageId: msg?.key?.id || null,
+    chatId,
+    senderId,
+    fromMe: !!msg?.key?.fromMe,
+    timestamp: msg?.messageTimestamp || null,
+    body,
+    hasMedia,
+    mediaType,
+    fileName,
+    messageKeys: keys,
+  };
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -261,6 +380,8 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+const historyQueue = [];
+const MAX_HISTORY_QUEUE_SIZE = 500;
 
 // Track recently sent message IDs.  Two purposes:
 //   1. Prevent echo-back loops with media in self-chat mode.
@@ -622,19 +743,25 @@ async function startSocket() {
       // themselves — stranger DMs / group pings must never reach the
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
+      let watched = false;
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
-          try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
-          } catch {}
-          continue;
+          const normalizedChatId = normalizeWhatsAppId(chatId);
+          const normalizedSenderId = normalizeWhatsAppId(senderId);
+          watched = WATCH_CHATS.has(normalizedChatId) || WATCH_CHATS.has(normalizedSenderId);
+          if (!watched) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'self_chat_mode_rejects_non_self',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (!watched && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -748,6 +875,17 @@ async function startSocket() {
       }
 
       messageStore.remember(msg);
+
+      try {
+        const normalizedEventChatId = normalizeWhatsAppId(chatId);
+        const normalizedEventSenderId = normalizeWhatsAppId(senderId);
+        if (WATCH_CHATS.has(normalizedEventChatId) || WATCH_CHATS.has(normalizedEventSenderId)) {
+          mkdirSync(path.dirname(WATCH_LOG_FILE), { recursive: true });
+          appendFileSync(WATCH_LOG_FILE, JSON.stringify({ ...event, receivedAt: new Date().toISOString() }) + '\n');
+        }
+      } catch (err) {
+        console.error('[bridge] Failed to write watch log:', err.message);
+      }
       messageQueue.push(event);
       emitDebugEvent({
         stage: 'queued',
@@ -762,6 +900,30 @@ async function startSocket() {
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }
+    }
+  });
+
+  sock.ev.on('messaging-history.set', ({ messages = [], chats = [], contacts = [], syncType, progress, isLatest, peerDataRequestSessionId }) => {
+    const events = messages.map(summarizeMessage);
+    for (const event of events) {
+      historyQueue.push(event);
+      if (historyQueue.length > MAX_HISTORY_QUEUE_SIZE) {
+        historyQueue.shift();
+      }
+    }
+    if (WHATSAPP_DEBUG) {
+      try {
+        console.log(JSON.stringify({
+          event: 'history',
+          messageCount: messages.length,
+          chatCount: chats.length,
+          contactCount: contacts.length,
+          syncType,
+          progress,
+          isLatest,
+          peerDataRequestSessionId,
+        }));
+      } catch {}
     }
   });
 }
@@ -805,6 +967,48 @@ app.use((req, res, next) => {
 app.get('/messages', (req, res) => {
   const msgs = messageQueue.splice(0, messageQueue.length);
   res.json(msgs);
+});
+
+// Request recent chat history around a known anchor message.
+app.post('/history', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const {
+    chatId,
+    messageId,
+    fromMe = true,
+    timestamp,
+    count = 50,
+    waitMs = 12000,
+  } = req.body || {};
+  if (!chatId || !messageId || !timestamp) {
+    return res.status(400).json({ error: 'chatId, messageId, and timestamp are required' });
+  }
+
+  const startIndex = historyQueue.length;
+  try {
+    const requestId = await sock.fetchMessageHistory(
+      Math.max(1, Math.min(Number(count) || 50, 50)),
+      { remoteJid: chatId, fromMe: !!fromMe, id: messageId },
+      Number(timestamp),
+    );
+
+    const deadline = Date.now() + Math.max(1000, Math.min(Number(waitMs) || 12000, 30000));
+    let matches = [];
+    while (Date.now() < deadline) {
+      matches = historyQueue
+        .slice(startIndex)
+        .filter(event => isSameChatId(event.chatId, chatId));
+      if (matches.length > 0) break;
+      await sleep(500);
+    }
+
+    res.json({ success: true, requestId, messages: matches });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Send a message
@@ -1074,6 +1278,7 @@ app.get('/health', (req, res) => {
     queueLength: messageQueue.length,
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
+    watchChats: Array.from(WATCH_CHATS),
   });
 });
 

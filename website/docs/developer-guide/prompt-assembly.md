@@ -26,7 +26,7 @@ Primary files:
 
 ## Cached system prompt layers
 
-The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
+The default cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
 1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, skills prompt, environment hints, platform hints
 2. **context** — caller-supplied `system_message` plus project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`)
@@ -40,6 +40,25 @@ This ordering matters for precedence discussions:
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
+
+### Composite prompt mode
+
+Before the legacy tiered assembly runs, Hermes checks the active profile and the root Hermes directory for:
+
+```text
+$HERMES_HOME/soul.md
+<root Hermes dir>/frontlobe.md
+<root Hermes dir>/memory.md
+<root Hermes dir>/projects.md
+```
+
+All four lowercase files must exist and contain content. Hermes joins them in that order as the cached baseline system prompt. It skips the legacy identity, project-context, memory snapshot, timestamp, platform-hint, environment, active-profile, tool, and skills prompt layers.
+
+Lowercase names are canonical and preferred when present, but case-only variants such as `SOUL.md` are accepted from the same directory.
+
+This mode separates profile-specific persona from shared executive/behavioral posture, shared standing memory-style context, and the shared current-project map. Only `soul.md` is profile-specific. `frontlobe.md`, `memory.md`, and `projects.md` always come from the root Hermes directory. Root `memory.md` is prompt material and is separate from the built-in memory store at `memories/MEMORY.md`.
+
+`agent.system_prompt`, `HERMES_EPHEMERAL_SYSTEM_PROMPT`, gateway/API system instructions, and `/personality` remain API-call-time overlays. They are appended on top of the cached baseline and do not replace the profile fragments.
 
 ### Concrete example: assembled system prompt
 
@@ -153,7 +172,30 @@ byte-stable hint for a fixed config, so it lives in the **stable** tier
 alongside the built-in hint and does not break prompt caching — it is
 not a live mid-session mutation of a frozen prompt.
 
-## How SOUL.md appears in the prompt
+## How Profile Fragments and SOUL.md Appear in the Prompt
+
+The strict composite prompt takes precedence over the older `SOUL.md` identity path:
+
+```python
+# From agent/prompt_builder.py (simplified)
+def load_profile_system_md() -> Optional[str]:
+    profile_home = get_hermes_home()
+    root = get_default_hermes_root()
+    paths = [
+        profile_home / "soul.md",
+        root / "frontlobe.md",
+        root / "memory.md",
+        root / "projects.md",
+    ]
+    parts = []
+    for path in paths:
+        content = path.read_text(encoding="utf-8").strip()
+        content = _scan_context_content(content, path.name)
+        parts.append(_truncate_content(content, path.name))
+    return "\n\n".join(parts)
+```
+
+When `load_profile_system_md()` returns content, `build_system_prompt_parts()` returns early. That is the profile-owned prompt path. Missing or empty fragments are a prompt-build error and list the exact required file paths.
 
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:
 
@@ -169,7 +211,7 @@ def load_soul_md() -> Optional[str]:
     return content
 ```
 
-When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file).
+When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_IDENTITY`. The `build_context_files_prompt()` function is then called with `skip_soul=True` to prevent SOUL.md from appearing twice (once as identity, once as a context file). This legacy path is bypassed by the strict profile-owned fragment path.
 
 If `SOUL.md` doesn't exist, the system falls back to:
 
@@ -261,7 +303,7 @@ Local memory and user profile data are captured in the system prompt's **volatil
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
-`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
+If composite prompt mode is active, project context files are not added to the cached system prompt. Otherwise, `SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
 
 Long files are truncated before injection.
 
@@ -275,8 +317,9 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 ### Use these surfaces first
 
-- `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
-- `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- `~/.hermes/profiles/<name>/soul.md` for named-profile persona, plus root `~/.hermes/frontlobe.md`, `~/.hermes/memory.md`, and `~/.hermes/projects.md` shared across profiles.
+- `~/.hermes/SOUL.md` — legacy identity block for code paths that do not use the profile-owned fragment path.
+- `~/.hermes/memories/MEMORY.md` and `~/.hermes/memories/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions on the legacy prompt path.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.

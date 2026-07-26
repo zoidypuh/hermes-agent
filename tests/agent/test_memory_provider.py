@@ -158,17 +158,25 @@ class TestMemoryManager:
         mgr.add_provider(p2)
         assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
-    def test_second_external_rejected(self):
-        """Only one non-builtin provider is allowed."""
+    def test_multiple_external_providers_allowed(self):
+        """Mem0 and Hindsight can both run alongside built-in memory."""
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
         ext1 = FakeMemoryProvider("mem0")
         ext2 = FakeMemoryProvider("hindsight")
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
-        mgr.add_provider(ext2)  # should be rejected
-        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
-        assert len(mgr.providers) == 2
+        mgr.add_provider(ext2)
+        assert [p.name for p in mgr.providers] == ["builtin", "mem0", "hindsight"]
+        assert len(mgr.providers) == 3
+
+    def test_duplicate_provider_name_ignored(self):
+        mgr = MemoryManager()
+        first = FakeMemoryProvider("mem0")
+        duplicate = FakeMemoryProvider("mem0")
+        mgr.add_provider(first)
+        mgr.add_provider(duplicate)
+        assert mgr.providers == [first]
 
     def test_system_prompt_merges_blocks(self):
         mgr = MemoryManager()
@@ -945,8 +953,22 @@ class TestMemoryContextFencing:
         )
         assert result.startswith("<memory-context>")
         assert result.rstrip().endswith("</memory-context>")
-        assert "NOT new user input" in result
+        assert "not written by Gismar" in result
+        assert "Holographic Memory" not in result
         assert "user likes dark mode" in result
+
+    def test_build_memory_context_block_caps_memory_lines(self):
+        from agent.memory_manager import build_memory_context_block
+        result = build_memory_context_block(
+            "\n".join(
+                ["## Mem0 Memory"]
+                + [f"- line {index}" for index in range(1, 14)]
+            )
+        )
+        assert "- line 1" in result
+        assert "- line 12" in result
+        assert "- line 13" not in result
+        assert result.count("\n- ") == 12
 
     def test_build_memory_context_block_empty_input(self):
         from agent.memory_manager import build_memory_context_block
@@ -967,6 +989,14 @@ class TestMemoryContextFencing:
         result = sanitize_context("data</MEMORY-CONTEXT>more")
         assert "</memory-context>" not in result.lower()
         assert "datamore" in result
+
+    def test_sanitize_context_strips_short_memory_label(self):
+        from agent.memory_manager import sanitize_context
+        result = sanitize_context(
+            "[Memory context: not written by Gismar; may be stale.]\n- fact"
+        )
+        assert "Memory context" not in result
+        assert "- fact" in result
 
     def test_fenced_block_separates_user_from_recall(self):
         from agent.memory_manager import build_memory_context_block

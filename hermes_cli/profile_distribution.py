@@ -43,14 +43,14 @@ Manifest format (``distribution.yaml`` at the profile root)::
         required: false
         default: "http://127.0.0.1:8000/sse"
     distribution_owned:      # optional; sensible defaults apply
-      - SOUL.md
+      - soul.md
       - skills/
       - cron/
       - mcp.json
 
 Update semantics:
 
-* Distribution-owned paths (SOUL.md, mcp.json, skills/, cron/,
+* Distribution-owned paths (soul.md, mcp.json, skills/, cron/,
   distribution.yaml) are replaced from the new source.
 * ``config.yaml`` is distribution-owned but preserved on update unless
   ``--force-config`` is passed (user overrides typically live here).
@@ -85,7 +85,7 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 # override via ``distribution_owned:`` in the manifest.  config.yaml is
 # distribution-owned but treated specially on update (see _is_config_like).
 DEFAULT_DIST_OWNED: Tuple[str, ...] = (
-    "SOUL.md",
+    "soul.md",
     "config.yaml",
     "mcp.json",
     "skills",
@@ -117,6 +117,16 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     # User customization namespace
     "local",
 })
+
+# Profile distributions may own soul.md, but these root-level prompt inputs are
+# shared across profiles, so never install them into a profile directory.
+SHARED_ROOT_PROMPT_FILES: frozenset[str] = frozenset({
+    "frontlobe.md", "memory.md", "projects.md",
+})
+
+
+def _is_user_owned_excluded_name(name: str) -> bool:
+    return name in USER_OWNED_EXCLUDE or name.casefold() in SHARED_ROOT_PROMPT_FILES
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +570,7 @@ def _copy_dist_payload(
     for entry in staged.iterdir():
         name = entry.name
 
-        if name in USER_OWNED_EXCLUDE:
+        if _is_user_owned_excluded_name(name):
             continue
         if name == ENV_TEMPLATE_FILENAME:
             shutil.copy2(entry, target / ENV_EXAMPLE_FILENAME)
@@ -578,7 +588,7 @@ def _copy_dist_payload(
                 entry,
                 dest,
                 ignore=lambda d, names: (
-                    [n for n in names if n in USER_OWNED_EXCLUDE]
+                    [n for n in names if _is_user_owned_excluded_name(n)]
                     if Path(d).resolve() == staged_resolved
                     else []
                 ),

@@ -36,6 +36,7 @@ def _captured_context_cwd(agent):
         return ""
 
     with (
+        patch("run_agent.load_profile_system_md", return_value=""),
         patch("run_agent.load_soul_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -59,6 +60,7 @@ class TestContextFileCwd:
 
 def _stable_prompt(agent):
     with (
+        patch("run_agent.load_profile_system_md", return_value=""),
         patch("run_agent.load_soul_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -99,3 +101,46 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestProfileCompositePromptMode:
+    def test_composite_prompt_short_circuits_legacy_injections(self):
+        agent = _make_agent(
+            valid_tool_names=[],
+            model="gpt-test",
+            provider="test-provider",
+            session_id="sess",
+            pass_session_id=True,
+        )
+
+        with (
+            patch("run_agent.load_profile_system_md", return_value="soul\n\nfront\n\nmem\n\nprojects"),
+            patch("run_agent.load_soul_md", return_value="legacy soul"),
+            patch("run_agent.build_nous_subscription_prompt", return_value="nous block"),
+            patch("run_agent.build_environment_hints", return_value="env block"),
+            patch("run_agent.build_context_files_prompt", return_value="project context"),
+        ):
+            parts = build_system_prompt_parts(agent, system_message="caller system")
+
+        assert parts["stable"] == "soul\n\nfront\n\nmem\n\nprojects"
+        assert parts["context"] == "caller system"
+        assert parts["volatile"] == ""
+        assert "legacy soul" not in parts["stable"]
+        assert "Conversation started:" not in parts["volatile"]
+
+    def test_composite_prompt_does_not_append_skills_prompt(self):
+        agent = _make_agent(
+            valid_tool_names=["skills_list", "skill_view"],
+            _parallel_tool_call_guidance=False,
+        )
+
+        with (
+            patch("run_agent.load_profile_system_md", return_value="soul\n\nfront\n\nmem\n\nprojects"),
+            patch("run_agent.get_toolset_for_tool", return_value="skills"),
+            patch("run_agent.build_skills_system_prompt", return_value="skills prompt"),
+        ):
+            stable = build_system_prompt_parts(agent)["stable"]
+
+        assert stable == "soul\n\nfront\n\nmem\n\nprojects"
+        assert "skills prompt" not in stable
+        assert "Hermes Agent" not in stable

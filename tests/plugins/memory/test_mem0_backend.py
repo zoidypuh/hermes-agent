@@ -3,6 +3,7 @@
 import pytest
 
 from plugins.memory.mem0._backend import (
+    LocalRESTBackend,
     Mem0Backend,
     PlatformBackend,
     OSSBackend,
@@ -302,3 +303,58 @@ class TestSelfHostedBackend:
         s = _StubServer()
         with pytest.raises(httpx.HTTPStatusError):
             _backend(s).delete("missing")  # 404 -> raise_for_status; 'not found' won't trip breaker
+
+
+def _local_backend(server, api_key="localkey", base_url="http://local:8888"):
+    backend = LocalRESTBackend.__new__(LocalRESTBackend)
+    backend._base_url = base_url
+    headers = {"X-API-Key": api_key} if api_key else {}
+    backend._client = httpx.Client(
+        base_url=base_url,
+        headers=headers,
+        transport=httpx.MockTransport(server.handler),
+    )
+    return backend
+
+
+class TestLocalRESTBackend:
+    def test_init_requires_base_url_and_sets_api_key(self):
+        with pytest.raises(ValueError, match="base_url"):
+            LocalRESTBackend("")
+
+        backend = LocalRESTBackend("http://local:8888/", api_key="localkey")
+        try:
+            assert backend._base_url == "http://local:8888"
+            assert backend._client.headers["x-api-key"] == "localkey"
+        finally:
+            backend.close()
+
+    def test_search_posts_local_payload_with_rerank(self):
+        server = _StubServer()
+        results = _local_backend(server).search(
+            "drink",
+            filters={"user_id": "u1"},
+            top_k=4,
+            rerank=False,
+        )
+        request = server.requests[-1]
+        import json
+
+        assert (request.method, request.url.path) == ("POST", "/search")
+        assert json.loads(request.content) == {
+            "query": "drink",
+            "top_k": 4,
+            "rerank": False,
+            "filters": {"user_id": "u1"},
+        }
+        assert results[0]["memory"] == "tea"
+
+    def test_update_url_encodes_memory_id(self):
+        server = _StubServer()
+        backend = _local_backend(server)
+        backend.update("folder/id with spaces", "new text")
+        request = server.requests[-1]
+
+        assert request.method == "PUT"
+        assert request.url.path == "/memories/folder/id with spaces"
+        assert request.url.raw_path == b"/memories/folder%2Fid%20with%20spaces"

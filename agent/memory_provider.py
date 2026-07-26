@@ -1,16 +1,14 @@
 """Abstract base class for pluggable memory providers.
 
 Memory providers give the agent persistent recall across sessions.
-The MemoryManager enforces a one-external-provider limit to prevent
-tool schema bloat and conflicting memory backends.
-
 External providers (Honcho, Hindsight, Mem0, etc.) are registered
-and managed via MemoryManager. Only one external provider runs at a
-time.
+and managed via MemoryManager. Multiple providers can run together;
+the manager fans out lifecycle hooks and routes each provider's tools
+by name.
 
 Registration:
   Plugins ship in plugins/memory/<name>/ and are activated via
-  the memory.provider config key.
+  the memory.provider or memory.providers config keys.
 
 Lifecycle (called by MemoryManager, wired in run_agent.py):
   initialize()          — connect, create resources, warm up

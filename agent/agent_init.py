@@ -68,6 +68,40 @@ def _ra():
     return run_agent
 
 
+def _configured_memory_provider_names(mem_config: Any) -> List[str]:
+    """Return ordered external memory providers from config.
+
+    ``memory.provider`` remains the primary/backward-compatible field.
+    ``memory.providers`` extends it with additional providers. Empty,
+    "builtin", and duplicate entries are ignored.
+    """
+    if not isinstance(mem_config, dict):
+        return []
+
+    raw_items: List[Any] = []
+    provider = mem_config.get("provider")
+    if provider:
+        raw_items.append(provider)
+
+    providers = mem_config.get("providers")
+    if isinstance(providers, str):
+        raw_items.extend(part.strip() for part in providers.split(","))
+    elif isinstance(providers, (list, tuple)):
+        raw_items.extend(providers)
+
+    names: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        name = str(item or "").strip()
+        if not name or name.lower() in {"built-in", "builtin", "none"}:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     """Build the one-time notice shown when Codex gpt-5.x raises compaction.
 
@@ -1348,20 +1382,27 @@ def init_agent(
     
 
 
-    # Memory provider plugin (external — one at a time, alongside built-in)
-    # Reads memory.provider from config to select which plugin to activate.
+    # Memory provider plugins (external, alongside built-in memory files).
+    # Reads memory.provider for the primary provider and memory.providers for
+    # optional additional providers.
     agent._memory_manager = None
     if not skip_memory:
         try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            _mem_provider_names = _configured_memory_provider_names(mem_config)
 
-            if _mem_provider_name and _mem_provider_name.strip():
+            if _mem_provider_names:
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
-                    agent._memory_manager.add_provider(_mp)
+                for _mem_provider_name in _mem_provider_names:
+                    _mp = _load_mem(_mem_provider_name)
+                    if _mp and _mp.is_available():
+                        agent._memory_manager.add_provider(_mp)
+                    else:
+                        _ra().logger.debug(
+                            "Memory provider '%s' not found or not available",
+                            _mem_provider_name,
+                        )
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,
@@ -1408,9 +1449,15 @@ def init_agent(
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    _ra().logger.info(
+                        "Memory providers activated: %s",
+                        ", ".join(p.name for p in agent._memory_manager.providers),
+                    )
                 else:
-                    _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
+                    _ra().logger.debug(
+                        "No configured memory providers were available: %s",
+                        ", ".join(_mem_provider_names),
+                    )
                     agent._memory_manager = None
         except Exception as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)

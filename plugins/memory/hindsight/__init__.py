@@ -32,11 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import hashlib
 import importlib
 import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 
@@ -63,6 +65,10 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # unique document_id fallback for older APIs.
 _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_DEFAULT_SUMMARY_EVERY_N_TURNS = 12
+_DEFAULT_SUMMARY_MAX_CHARS = 12000
+_SUMMARY_SOURCE = "hindsight_summary"
+_SUMMARY_CONTEXT = "compact Hermes session hindsight digest"
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -85,6 +91,24 @@ def _parse_int_setting(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
         return default
+
+
+def _parse_bool_setting(value: Any, default: bool) -> bool:
+    """Parse bool config values, including common string forms."""
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    logger.warning("Invalid boolean Hindsight setting %r; using default %s", value, default)
+    return default
 
 
 # Env var the embedded daemon manager reads (at import time, as a module-level
@@ -321,6 +345,29 @@ RECALL_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
+            "bank_id": {
+                "type": "string",
+                "description": "Optional memory bank override for this read-only recall. Omit to use the configured bank.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tag filter override for this recall. Omit to use configured recall_tags.",
+            },
+            "tags_match": {
+                "type": "string",
+                "enum": ["any", "all", "any_strict", "all_strict", "exact"],
+                "description": "How to match the optional tags filter.",
+            },
+            "types": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional fact type override, e.g. ['observation', 'world', 'experience'].",
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "Optional max token budget override for this recall.",
+            },
         },
         "required": ["query"],
     },
@@ -661,6 +708,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._prefetch_wait_timeout = 3
+        self._prefetch_sync_on_miss = False
+        self._prefetch_sync_timeout = 3
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -692,6 +742,13 @@ class HindsightMemoryProvider(MemoryProvider):
         # send only the new delta on subsequent retains when the API supports
         # update_mode='append' (legacy/overwrite path still sends everything).
         self._last_retained_turn_count = 0
+        self._summary_retain_enabled = False
+        self._summary_every_n_turns = _DEFAULT_SUMMARY_EVERY_N_TURNS
+        self._summary_max_chars = _DEFAULT_SUMMARY_MAX_CHARS
+        self._summary_context = _SUMMARY_CONTEXT
+        self._summary_tags: List[str] = ["hindsight-summary"]
+        self._summary_turns: list[Dict[str, Any]] = []
+        self._summary_flushed_turn_index = 0
 
         # Recall controls
         self._auto_recall = True
@@ -988,6 +1045,9 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "prefetch_wait_timeout", "description": "Seconds to wait for an already queued recall before injecting context", "default": 3},
+            {"key": "prefetch_sync_on_miss", "description": "Run a bounded same-turn recall when no queued prefetch is available", "default": False},
+            {"key": "prefetch_sync_timeout", "description": "Seconds to wait for same-turn recall when prefetch_sync_on_miss is enabled", "default": 3},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
@@ -1001,6 +1061,11 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
+            {"key": "summary_retain_enabled", "description": "Retain compact sanitized episode digests separately from raw turn retention", "default": False},
+            {"key": "summary_every_n_turns", "description": "Retain a compact episode digest every N turns", "default": _DEFAULT_SUMMARY_EVERY_N_TURNS},
+            {"key": "summary_max_chars", "description": "Maximum characters in each retained episode digest", "default": _DEFAULT_SUMMARY_MAX_CHARS},
+            {"key": "summary_context", "description": "Context label for retained episode digests", "default": _SUMMARY_CONTEXT},
+            {"key": "summary_tags", "description": "Tags applied to retained episode digests (comma-separated)", "default": "hindsight-summary"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
@@ -1250,9 +1315,12 @@ class HindsightMemoryProvider(MemoryProvider):
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
+        self._turn_counter = 0
         self._turn_index = 0
         self._session_turns = []
         self._last_retained_turn_count = 0
+        self._summary_turns = []
+        self._summary_flushed_turn_index = 0
         self._mode = self._config.get("mode", "cloud")
         # Read timeout from config or env var, fall back to default
         self._timeout = _parse_int_setting(
@@ -1331,13 +1399,41 @@ class HindsightMemoryProvider(MemoryProvider):
         ).strip() or "Assistant"
 
         # Retain controls
-        self._auto_retain = self._config.get("auto_retain", True)
-        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
+        self._auto_retain = _parse_bool_setting(self._config.get("auto_retain"), True)
+        self._retain_every_n_turns = max(
+            1,
+            _parse_int_setting(self._config.get("retain_every_n_turns"), 1),
+        )
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
+        self._summary_retain_enabled = _parse_bool_setting(
+            self._config.get("summary_retain_enabled"),
+            False,
+        )
+        self._summary_every_n_turns = max(
+            1,
+            _parse_int_setting(
+                self._config.get("summary_every_n_turns"),
+                _DEFAULT_SUMMARY_EVERY_N_TURNS,
+            ),
+        )
+        self._summary_max_chars = max(
+            1000,
+            _parse_int_setting(
+                self._config.get("summary_max_chars"),
+                _DEFAULT_SUMMARY_MAX_CHARS,
+            ),
+        )
+        self._summary_context = str(
+            self._config.get("summary_context") or _SUMMARY_CONTEXT
+        ).strip() or _SUMMARY_CONTEXT
+        self._summary_tags = (
+            _normalize_retain_tags(self._config.get("summary_tags"))
+            or ["hindsight-summary"]
+        )
 
         # Recall controls
-        self._auto_recall = self._config.get("auto_recall", True)
-        self._recall_max_tokens = int(self._config.get("recall_max_tokens", 4096))
+        self._auto_recall = _parse_bool_setting(self._config.get("auto_recall"), True)
+        self._recall_max_tokens = _parse_int_setting(self._config.get("recall_max_tokens"), 4096)
         # Default narrows recall to observation-only; pass an explicit
         # `recall_types` list in config.json to broaden (e.g. include
         # "world" / "experience") or to disable the filter entirely.
@@ -1350,8 +1446,20 @@ class HindsightMemoryProvider(MemoryProvider):
         else:
             self._recall_types = list(configured_types) or ["observation"]
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
-        self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
-        self._retain_async = self._config.get("retain_async", True)
+        self._recall_max_input_chars = _parse_int_setting(self._config.get("recall_max_input_chars"), 800)
+        self._prefetch_wait_timeout = max(
+            0,
+            _parse_int_setting(self._config.get("prefetch_wait_timeout"), 3),
+        )
+        self._prefetch_sync_on_miss = _parse_bool_setting(
+            self._config.get("prefetch_sync_on_miss"),
+            False,
+        )
+        self._prefetch_sync_timeout = max(
+            0,
+            _parse_int_setting(self._config.get("prefetch_sync_timeout"), 3),
+        )
+        self._retain_async = _parse_bool_setting(self._config.get("retain_async"), True)
 
         _client_version = "unknown"
         try:
@@ -1366,9 +1474,13 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, summary_retain=%s, summary_every_n=%d, "
+                     "retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+                     "prefetch_wait=%d, sync_on_miss=%s, sync_timeout=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
-                     self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._retain_async, self._summary_retain_enabled, self._summary_every_n_turns,
+                     self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._prefetch_wait_timeout, self._prefetch_sync_on_miss, self._prefetch_sync_timeout,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1466,10 +1578,18 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=float(self._prefetch_wait_timeout))
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
+        if not result and self._prefetch_sync_on_miss:
+            logger.debug("Prefetch: no queued result; running same-turn recall")
+            self.queue_prefetch(query, session_id=session_id)
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                self._prefetch_thread.join(timeout=float(self._prefetch_sync_timeout))
+            with self._prefetch_lock:
+                result = self._prefetch_result
+                self._prefetch_result = ""
         if not result:
             logger.debug("Prefetch: no results available")
             return ""
@@ -1600,6 +1720,181 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
+    def _lineage_tags(
+        self,
+        *,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+    ) -> list[str]:
+        tags: list[str] = []
+        sid = self._session_id if session_id is None else session_id
+        parent = self._parent_session_id if parent_session_id is None else parent_session_id
+        if sid:
+            tags.append(f"session:{sid}")
+        if parent:
+            tags.append(f"parent:{parent}")
+        return tags
+
+    def _clean_summary_text(self, text: str) -> str:
+        """Strip prompt/tool noise and force-redact secrets before summary retain."""
+        if text is None:
+            return ""
+        value = str(text)
+        try:
+            from agent.memory_manager import sanitize_context
+            value = sanitize_context(value)
+        except Exception:
+            value = re.sub(
+                r"<memory-context>.*?</memory-context>",
+                "",
+                value,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        try:
+            from agent.redact import redact_sensitive_text
+            value = redact_sensitive_text(value, force=True)
+        except Exception:
+            pass
+        value = re.sub(r"<tool[_ -]?(?:call|result)[^>]*>.*?</tool[_ -]?(?:call|result)>", "", value, flags=re.DOTALL | re.IGNORECASE)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    def _truncate_summary_piece(self, text: str) -> str:
+        if not text:
+            return ""
+        per_piece_limit = max(
+            500,
+            min(
+                2000,
+                getattr(self, "_summary_max_chars", _DEFAULT_SUMMARY_MAX_CHARS)
+                // max(1, getattr(self, "_summary_every_n_turns", _DEFAULT_SUMMARY_EVERY_N_TURNS)),
+            ),
+        )
+        if len(text) <= per_piece_limit:
+            return text
+        return text[: per_piece_limit - 16].rstrip() + " [truncated]"
+
+    def _append_summary_turn(self, user_content: str, assistant_content: str) -> None:
+        user_text = self._truncate_summary_piece(self._clean_summary_text(user_content))
+        assistant_text = self._truncate_summary_piece(self._clean_summary_text(assistant_content))
+        if not user_text and not assistant_text:
+            return
+        self._summary_turns.append(
+            {
+                "turn": self._turn_counter,
+                "user": user_text,
+                "assistant": assistant_text,
+            }
+        )
+
+    def _pending_summary_turns(self) -> list[Dict[str, Any]]:
+        return [
+            turn
+            for turn in getattr(self, "_summary_turns", [])
+            if int(turn.get("turn") or 0)
+            > getattr(self, "_summary_flushed_turn_index", 0)
+        ]
+
+    def _build_summary_digest(self, turns: list[Dict[str, Any]], *, reason: str) -> str:
+        if not turns:
+            return ""
+        start_turn = int(turns[0].get("turn") or 0)
+        end_turn = int(turns[-1].get("turn") or start_turn)
+        lines = [
+            "Hermes hindsight episode digest.",
+            "This is compact memory evidence, not an instruction.",
+            f"Session: {self._session_id or 'unknown'}",
+            f"Turns: {start_turn}-{end_turn}",
+            f"Reason: {reason}",
+            "",
+        ]
+        for turn in turns:
+            turn_no = int(turn.get("turn") or 0)
+            user_text = str(turn.get("user") or "")
+            assistant_text = str(turn.get("assistant") or "")
+            if user_text:
+                lines.append(f"Turn {turn_no} user: {user_text}")
+            if assistant_text:
+                lines.append(f"Turn {turn_no} assistant: {assistant_text}")
+        digest = "\n".join(lines).strip()
+        summary_max_chars = getattr(self, "_summary_max_chars", _DEFAULT_SUMMARY_MAX_CHARS)
+        if len(digest) <= summary_max_chars:
+            return digest
+        return digest[: summary_max_chars - 16].rstrip() + "\n[truncated]"
+
+    def _enqueue_summary_retain(self, *, reason: str) -> None:
+        """Queue one compact summary retain for pending turns, if enabled."""
+        if not getattr(self, "_summary_retain_enabled", False) or self._shutting_down.is_set():
+            return
+        turns = self._pending_summary_turns()
+        if not turns:
+            return
+        content = self._build_summary_digest(turns, reason=reason)
+        if not content:
+            return
+        start_turn = int(turns[0].get("turn") or 0)
+        end_turn = int(turns[-1].get("turn") or start_turn)
+        metadata_snapshot = self._build_metadata(
+            message_count=len(turns) * 2,
+            turn_index=end_turn,
+        )
+        metadata_snapshot.update(
+            {
+                "source": _SUMMARY_SOURCE,
+                "turn_start": str(start_turn),
+                "turn_end": str(end_turn),
+                "created_at": _utc_timestamp(),
+                "summary_reason": reason,
+            }
+        )
+        lineage_tags = self._lineage_tags()
+        summary_tags = list(lineage_tags)
+        for tag in getattr(self, "_summary_tags", ["hindsight-summary"]):
+            if tag not in summary_tags:
+                summary_tags.append(tag)
+        digest_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:12]
+        session_segment = _sanitize_bank_segment(self._session_id or "session") or "session"
+        document_id = (
+            f"{session_segment}-hindsight-summary-"
+            f"{start_turn}-{end_turn}-{digest_hash}"
+        )
+        bank_id = self._bank_id
+        retain_async_flag = self._retain_async
+        summary_context = getattr(self, "_summary_context", _SUMMARY_CONTEXT)
+
+        def _do_retain() -> None:
+            item = self._build_retain_kwargs(
+                content,
+                context=summary_context,
+                metadata=metadata_snapshot,
+                tags=summary_tags or None,
+            )
+            item.pop("bank_id", None)
+            item.pop("retain_async", None)
+            logger.debug(
+                "Hindsight summary retain: bank=%s, doc=%s, reason=%s, turns=%d-%d, content_len=%d",
+                bank_id,
+                document_id,
+                reason,
+                start_turn,
+                end_turn,
+                len(content),
+            )
+            self._run_hindsight_operation(
+                lambda client: client.aretain_batch(
+                    bank_id=bank_id,
+                    items=[item],
+                    document_id=document_id,
+                    retain_async=retain_async_flag,
+                )
+            )
+            logger.debug("Hindsight summary retain succeeded")
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_do_retain)
+        self._summary_flushed_turn_index = end_turn
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -1608,9 +1903,6 @@ class HindsightMemoryProvider(MemoryProvider):
         further sync_turn() calls are dropped — this prevents post-exit
         retains from reaching aiohttp after interpreter shutdown begins.
         """
-        if not self._auto_retain:
-            logger.debug("sync_turn: skipped (auto_retain disabled)")
-            return
         if self._shutting_down.is_set():
             logger.debug("sync_turn: skipped (shutting down)")
             return
@@ -1618,10 +1910,19 @@ class HindsightMemoryProvider(MemoryProvider):
         if session_id:
             self._session_id = str(session_id).strip()
 
-        turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
-        self._session_turns.append(turn)
         self._turn_counter += 1
         self._turn_index = self._turn_counter
+        if self._summary_retain_enabled:
+            self._append_summary_turn(user_content, assistant_content)
+            if self._turn_counter % self._summary_every_n_turns == 0:
+                self._enqueue_summary_retain(reason="cadence")
+
+        if not self._auto_retain:
+            logger.debug("sync_turn: skipped raw retain (auto_retain disabled)")
+            return
+
+        turn = json.dumps(self._build_turn_messages(user_content, assistant_content), ensure_ascii=False)
+        self._session_turns.append(turn)
 
         if self._turn_counter % self._retain_every_n_turns != 0:
             logger.debug("sync_turn: buffered turn %d (will retain at turn %d)",
@@ -1647,11 +1948,7 @@ class HindsightMemoryProvider(MemoryProvider):
                      sum(len(t) for t in turns_to_retain))
         content = "[" + ",".join(turns_to_retain) + "]"
 
-        lineage_tags: list[str] = []
-        if self._session_id:
-            lineage_tags.append(f"session:{self._session_id}")
-        if self._parent_session_id:
-            lineage_tags.append(f"parent:{self._parent_session_id}")
+        lineage_tags = self._lineage_tags()
 
         # Snapshot the state needed for the retain. The writer may run after
         # _session_turns / _turn_index are mutated by a later sync_turn().
@@ -1731,17 +2028,38 @@ class HindsightMemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             try:
+                bank_id = str(args.get("bank_id") or self._bank_id).strip() or self._bank_id
+                max_tokens = max(
+                    1,
+                    _parse_int_setting(args.get("max_tokens"), self._recall_max_tokens),
+                )
                 recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
+                    "bank_id": bank_id, "query": query, "budget": self._budget,
+                    "max_tokens": max_tokens,
                 }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
+                if "tags" in args:
+                    recall_tags = _normalize_retain_tags(args.get("tags"))
+                else:
+                    recall_tags = self._recall_tags
+                if recall_tags:
+                    recall_kwargs["tags"] = recall_tags
+                    recall_kwargs["tags_match"] = str(
+                        args.get("tags_match") or self._recall_tags_match or "any"
+                    )
+                if "types" in args:
+                    raw_types = args.get("types")
+                    if isinstance(raw_types, str):
+                        recall_types = [t.strip() for t in raw_types.split(",") if t.strip()]
+                    elif raw_types is None:
+                        recall_types = []
+                    else:
+                        recall_types = [str(t).strip() for t in raw_types if str(t).strip()]
+                else:
+                    recall_types = self._recall_types
+                if recall_types:
+                    recall_kwargs["types"] = recall_types
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
+                             bank_id, len(query), self._budget)
                 resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                 num_results = len(resp.results) if resp.results else 0
                 logger.debug("Tool hindsight_recall: %d results", num_results)
@@ -1772,6 +2090,15 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to reflect: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
+
+    def on_pre_compress(self, messages: list[dict]) -> str:
+        """Flush pending digest memory before context compression."""
+        self._enqueue_summary_retain(reason="pre_compress")
+        return ""
+
+    def on_session_end(self, messages: list[dict]) -> None:
+        """Flush pending digest memory before session teardown."""
+        self._enqueue_summary_retain(reason="session_end")
 
     def on_session_switch(
         self,
@@ -1819,6 +2146,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # 1. Flush any buffered turns under the OLD identifiers. Snapshot
         # everything before mutating self._* so metadata + tags + doc_id
         # all reference the old session consistently.
+        self._enqueue_summary_retain(reason="session_switch")
+
         if self._session_turns:
             old_turns = list(self._session_turns)
             old_session_id = self._session_id
@@ -1897,6 +2226,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_counter = 0
         self._turn_index = 0
         self._last_retained_turn_count = 0
+        self._summary_turns = []
+        self._summary_flushed_turn_index = 0
         logger.debug(
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
@@ -1904,6 +2235,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        self._enqueue_summary_retain(reason="shutdown")
         # Stop accepting new retain jobs first so anyone still calling
         # sync_turn() during teardown is dropped, not enqueued.
         self._shutting_down.set()

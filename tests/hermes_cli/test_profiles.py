@@ -187,6 +187,11 @@ class TestCreateProfile:
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
+    def test_fresh_profile_seeds_lowercase_soul(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        assert (profile_dir / "soul.md").exists()
+        assert "Hermes Agent" in (profile_dir / "soul.md").read_text(encoding="utf-8")
+
     def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -213,6 +218,9 @@ class TestCreateProfile:
         # Create source config files in default profile
         (default_home / "config.yaml").write_text("model: test")
         (default_home / ".env").write_text("KEY=val")
+        (default_home / "soul.md").write_text("Soul prompt.")
+        (default_home / "frontlobe.md").write_text("Front prompt.")
+        (default_home / "memory.md").write_text("Root memory prompt.")
         (default_home / "SOUL.md").write_text("Be helpful.")
 
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
@@ -221,7 +229,18 @@ class TestCreateProfile:
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
+        assert (profile_dir / "soul.md").read_text() == "Soul prompt."
+        assert not (profile_dir / "frontlobe.md").exists()
+        assert not (profile_dir / "memory.md").exists()
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_uses_legacy_soul_as_lowercase_fallback(self, profile_env):
+        default_home = profile_env / ".hermes"
+        (default_home / "SOUL.md").write_text("Legacy source soul.", encoding="utf-8")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (profile_dir / "soul.md").read_text(encoding="utf-8") == "Legacy source soul."
 
     def test_clone_config_migrates_legacy_config_version(self, profile_env):
         tmp_path = profile_env
@@ -389,6 +408,7 @@ class TestCreateProfile:
         assert (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
+        assert (profile_dir / "soul.md").exists()
 
 
 # ===================================================================
