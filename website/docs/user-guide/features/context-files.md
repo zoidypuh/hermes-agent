@@ -1,12 +1,12 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, composite prompt files, SOUL.md, and .cursorrules — automatically injected into every conversation"
 ---
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. Profile-level system files are loaded from `HERMES_HOME` only.
 
 ## Supported Context Files
 
@@ -15,12 +15,13 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
+| **soul.md** + **frontlobe.md** + **memory.md** + **projects.md** | Composite baseline system prompt | `soul.md` from `HERMES_HOME`; the rest from root Hermes dir |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. The lowercase composite prompt takes precedence as the baseline prompt. `SOUL.md` is loaded independently by older legacy prompt paths.
 :::
 
 ## AGENTS.md
@@ -77,9 +78,16 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 - Frontend port is 3000, backend is 8000, DB is 5432
 ```
 
-## SOUL.md
+## Profile Fragments and SOUL.md
 
-`SOUL.md` controls the agent's personality, tone, and communication style. See the [Personality](/user-guide/features/personality) page for full details.
+`soul.md`, `frontlobe.md`, `memory.md`, and `projects.md` own the baseline prompt. Hermes joins profile `soul.md`, root `frontlobe.md`, root `memory.md`, and root `projects.md` in that order and uses the result instead of the older layered identity/context/memory/timestamp prompt stack. All four lowercase files must exist and contain content. See the [Personality](/user-guide/features/personality) page for full details.
+
+**Location:**
+
+- `$HERMES_HOME/soul.md`
+- root Hermes dir `frontlobe.md`, `memory.md`, and `projects.md`
+
+Legacy `SOUL.md` controls the agent's personality, tone, and communication style for older prompt paths. See the [Personality](/user-guide/features/personality) page for full details.
 
 **Location:**
 

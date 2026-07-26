@@ -8,7 +8,7 @@ Run multiple independent Hermes agents on the same machine — each with its own
 
 ## What are profiles?
 
-A profile is a separate Hermes home directory. Each profile gets its own directory containing its own `config.yaml`, `.env`, `SOUL.md`, memories, sessions, skills, cron jobs, and state database. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up Hermes state.
+A profile is a separate Hermes home directory. Each profile gets its own directory containing its own `config.yaml`, `.env`, `soul.md`, memories, sessions, skills, cron jobs, and state database. Profiles let you run separate agents for different purposes — a coding assistant, a personal bot, a research agent — without mixing up Hermes state.
 
 When you create a profile, it automatically becomes its own command. Create a profile called `coder` and you immediately have `coder chat`, `coder setup`, `coder gateway start`, etc.
 
@@ -50,7 +50,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, profile `soul.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or the profile's `soul.md` for a different profile persona. Root `frontlobe.md`, `memory.md`, and `projects.md` remain shared.
 
 ### Clone everything (`--clone-all`)
 
@@ -192,11 +192,12 @@ Each profile has its own:
 
 - **`config.yaml`** — model, provider, toolsets, all settings
 - **`.env`** — API keys, bot tokens
-- **`SOUL.md`** — personality and instructions
+- **`soul.md`** — profile-owned persona and voice
+- **`SOUL.md`** — legacy personality and instructions for older prompt paths
 
 ```bash
 coder config set model.default anthropic/claude-sonnet-4
-echo "You are a focused coding assistant." > ~/.hermes/profiles/coder/SOUL.md
+echo "You are a focused coding assistant." > ~/.hermes/profiles/coder/soul.md
 ```
 
 If you want this profile to work in a specific project by default, also set its own `terminal.cwd`:

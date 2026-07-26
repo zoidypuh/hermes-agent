@@ -48,6 +48,23 @@ def _title_language() -> str:
         return ""
 
 
+def _title_generation_enabled() -> bool:
+    """Return whether automatic title generation is enabled."""
+    try:
+        from hermes_cli.config import load_config
+
+        value = (
+            ((load_config() or {}).get("auxiliary") or {})
+            .get("title_generation", {})
+            .get("enabled", True)
+        )
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+        return bool(value)
+    except Exception:
+        return True
+
+
 def generate_title(
     user_message: str,
     assistant_response: str,
@@ -180,6 +197,8 @@ def maybe_auto_title(
     - No title is already set
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+    if not _title_generation_enabled():
         return
 
     # Count user messages in history to detect first exchange.

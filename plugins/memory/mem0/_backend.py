@@ -1,9 +1,10 @@
-"""Backend abstraction for Mem0 Platform and OSS modes."""
+"""Backend abstraction for Mem0 Platform, HTTP, and OSS modes."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import Any
+from urllib.parse import quote
 
 
 class Mem0Backend(ABC):
@@ -151,6 +152,65 @@ class SelfHostedBackend(Mem0Backend):
             self._client.close()
         except Exception:
             pass
+
+
+class LocalRESTBackend(Mem0Backend):
+    """Wraps the local Mem0 REST API service."""
+
+    def __init__(self, base_url: str, *, api_key: str = "", timeout: float = 60.0):
+        import httpx
+
+        self._base_url = base_url.rstrip("/")
+        if not self._base_url:
+            raise ValueError("local Mem0 base_url is required")
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        self._client = httpx.Client(base_url=self._base_url, headers=headers, timeout=timeout)
+
+    @staticmethod
+    def _response_json(response: Any) -> Any:
+        response.raise_for_status()
+        return response.json()
+
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
+        payload: dict[str, Any] = {"query": query, "top_k": top_k, "rerank": rerank}
+        if filters:
+            payload["filters"] = filters
+        response = self._response_json(self._client.post("/search", json=payload))
+        return _unwrap_results(response)
+
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "messages": messages,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "infer": infer,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        return self._response_json(self._client.post("/memories", json=payload))
+
+    def update(self, memory_id: str, text: str) -> dict:
+        quoted_id = quote(memory_id, safe="")
+        self._response_json(self._client.put(f"/memories/{quoted_id}", json={"text": text}))
+        return {"result": "Memory updated.", "memory_id": memory_id}
+
+    def delete(self, memory_id: str) -> dict:
+        quoted_id = quote(memory_id, safe="")
+        self._response_json(self._client.delete(f"/memories/{quoted_id}"))
+        return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def close(self) -> None:
+        self._client.close()
 
 
 class OSSBackend(Mem0Backend):

@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_profile_system_md,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
     _get_context_file_max_chars,
@@ -689,6 +690,89 @@ class TestBuildNousSubscriptionPrompt:
 # =========================================================================
 # Context files prompt builder
 # =========================================================================
+
+
+class TestProfileCompositeSystemPrompt:
+    def _write_fragments(
+        self, home, *, soul="soul", frontlobe="front", memory="mem", projects="projects"
+    ):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "soul.md").write_text(soul, encoding="utf-8")
+        (home / "frontlobe.md").write_text(frontlobe, encoding="utf-8")
+        (home / "memory.md").write_text(memory, encoding="utf-8")
+        (home / "projects.md").write_text(projects, encoding="utf-8")
+
+    def test_loads_lowercase_fragments_in_order(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_fragments(
+            hermes_home, soul="one", frontlobe="two", memory="three", projects="four"
+        )
+
+        assert load_profile_system_md() == "one\n\ntwo\n\nthree\n\nfour"
+
+    def test_loads_case_insensitive_fragment_names(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "SOUL.md").write_text("one", encoding="utf-8")
+        (hermes_home / "FRONTLOBE.md").write_text("two", encoding="utf-8")
+        (hermes_home / "MEMORY.md").write_text("three", encoding="utf-8")
+        (hermes_home / "PROJECTS.md").write_text("four", encoding="utf-8")
+
+        assert load_profile_system_md() == "one\n\ntwo\n\nthree\n\nfour"
+
+    def test_system_md_is_ignored_when_fragments_exist(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_fragments(hermes_home)
+        (hermes_home / "SYSTEM.md").write_text("old system prompt", encoding="utf-8")
+
+        result = load_profile_system_md()
+
+        assert "old system prompt" not in result
+        assert result == "soul\n\nfront\n\nmem\n\nprojects"
+
+    def test_named_profile_uses_root_frontlobe_and_memory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "coder"
+        hermes_root.mkdir(parents=True)
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        (profile_home / "SOUL.md").write_text("profile soul", encoding="utf-8")
+        (profile_home / "frontlobe.md").write_text("profile front ignored", encoding="utf-8")
+        (profile_home / "memory.md").write_text("profile memory ignored", encoding="utf-8")
+        (hermes_root / "FRONTLOBE.md").write_text("root front", encoding="utf-8")
+        (hermes_root / "MEMORY.md").write_text("root memory", encoding="utf-8")
+        (hermes_root / "PROJECTS.md").write_text("root projects", encoding="utf-8")
+
+        assert load_profile_system_md() == (
+            "profile soul\n\nroot front\n\nroot memory\n\nroot projects"
+        )
+
+    def test_missing_fragment_raises_with_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        hermes_home.mkdir(parents=True)
+        (hermes_home / "soul.md").write_text("soul", encoding="utf-8")
+        (hermes_home / "memory.md").write_text("mem", encoding="utf-8")
+        (hermes_home / "projects.md").write_text("projects", encoding="utf-8")
+
+        with pytest.raises(RuntimeError) as exc:
+            load_profile_system_md()
+
+        assert str(hermes_home / "frontlobe.md") in str(exc.value)
+
+    def test_empty_fragment_raises_with_path(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._write_fragments(hermes_home, memory="\n\n")
+
+        with pytest.raises(RuntimeError) as exc:
+            load_profile_system_md()
+
+        assert str(hermes_home / "memory.md") in str(exc.value)
 
 
 class TestBuildContextFilesPrompt:
@@ -1644,5 +1728,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

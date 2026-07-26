@@ -1,11 +1,23 @@
-"""Tests for Mem0 v3 API — new tool names, paginated responses, update/delete tools."""
+"""Tests for the Mem0 provider's tools, recall guardrails, and routing."""
 
+from datetime import datetime, timedelta, timezone
 import json
 import time
 import pytest
 
 import plugins.memory.mem0 as mem0_plugin
 from plugins.memory.mem0 import Mem0MemoryProvider
+
+
+def explicit_memory(memory_id, text, *, score=0.99, created_at=None, session_id="old-session"):
+    metadata = {"source": "explicit", "session_id": session_id, "source_session_id": session_id}
+    if created_at is not None:
+        metadata["created_at_iso"] = created_at
+    return {"id": memory_id, "memory": text, "score": score, "metadata": metadata}
+
+
+def inferred_memory(memory_id, text, *, score=0.99):
+    return {"id": memory_id, "memory": text, "score": score, "metadata": {"source": "inferred"}}
 
 
 class FakeBackend:
@@ -89,12 +101,16 @@ class TestMem0V3Tools:
     def test_add_uses_content_param(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)
-        result = json.loads(provider.handle_tool_call("mem0_add", {"content": "user likes dark mode"}))
+        result = json.loads(provider.handle_tool_call(
+            "mem0_add", {"content": "user likes dark mode", "tags": ["preference"]}
+        ))
         assert len(backend.captured) == 1
         call = backend.captured[0]
         assert call[2]["infer"] is False
         assert call[2]["user_id"] == "u123"
         assert call[2]["agent_id"] == "hermes"
+        assert call[2]["metadata"]["source"] == "explicit"
+        assert call[2]["metadata"]["tags"] == ["preference"]
         assert "event_id" in result
 
     def test_add_returns_event_id(self, monkeypatch):
@@ -244,16 +260,105 @@ class TestMem0V3Internal:
         provider._backend = backend
         return provider
 
-    def test_sync_turn_explicit_kwargs(self, monkeypatch):
+    def test_sync_turn_noops_by_default(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        assert provider._sync_thread is None
+        assert backend.captured == []
+
+    def test_sync_turn_auto_adds_only_to_candidate_when_enabled(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config.update({
+            "auto_add_enabled": "true",
+            "inference_enabled": "true",
+            "candidate_user_id": "candidate-user",
+        })
         provider.sync_turn("user said", "assistant replied", session_id="s1")
         provider._sync_thread.join(timeout=2)
         assert len(backend.captured) == 1
         call = backend.captured[0]
-        assert call[2]["user_id"] == "u123"
+        assert call[2]["user_id"] == "candidate-user"
         assert call[2]["agent_id"] == "hermes"
         assert call[2]["infer"] is True
+        assert call[2]["metadata"]["source"] == "inferred"
+        assert call[2]["metadata"]["status"] == "pending"
+
+    def test_prefetch_requests_and_returns_at_most_three_memories(self, monkeypatch):
+        backend = FakeBackend(search_results=[
+            explicit_memory("m1", "one"),
+            explicit_memory("m2", "two"),
+            explicit_memory("m3", "three"),
+            explicit_memory("m4", "four"),
+        ])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        result = provider.prefetch("hello", session_id="s1")
+
+        assert backend.captured[0][2]["top_k"] == 10
+        assert result == "## Mem0 Memory\n- one\n- two\n- three"
+        assert "four" not in result
+
+    def test_prefetch_respects_stricter_configured_top_k(self, monkeypatch):
+        backend = FakeBackend(search_results=[
+            explicit_memory("m1", "one"),
+            explicit_memory("m2", "two"),
+            explicit_memory("m3", "three"),
+        ])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        provider._config["prefetch_top_k"] = 2
+        result = provider.prefetch("hello", session_id="s1")
+
+        assert backend.captured[0][2]["top_k"] == 10
+        assert result == "## Mem0 Memory\n- one\n- two"
+
+    def test_prefetch_disabled_skips_backend_search(self, monkeypatch):
+        backend = FakeBackend(search_results=[explicit_memory("m1", "one")])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "false"
+        assert provider.prefetch("hello", session_id="s1") == ""
+        assert provider._prefetch_thread is None
+        assert backend.captured == []
+
+    def test_prefetch_blocks_inferred_memories(self, monkeypatch):
+        backend = FakeBackend(search_results=[inferred_memory("m1", "one")])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        assert provider.prefetch("hello", session_id="s1") == ""
+
+    def test_prefetch_blocks_recent_memories(self, monkeypatch):
+        nowish = datetime.now(timezone.utc).isoformat()
+        backend = FakeBackend(search_results=[explicit_memory("m1", "fresh", created_at=nowish)])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        assert provider.prefetch("hello", session_id="s1") == ""
+
+    def test_prefetch_blocks_same_session_memories_under_one_hour(self, monkeypatch):
+        old_enough_for_recency = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+        backend = FakeBackend(search_results=[
+            explicit_memory("m1", "same-session", created_at=old_enough_for_recency, session_id="s1")
+        ])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        assert provider.prefetch("hello", session_id="s1") == ""
+
+    def test_prefetch_writes_injection_audit(self, monkeypatch, tmp_path):
+        audit_path = tmp_path / "mem0_live_injection_audit.jsonl"
+        backend = FakeBackend(search_results=[explicit_memory("m1", "one")])
+        provider = self._make_provider(monkeypatch, backend)
+        provider._config["auto_inject_enabled"] = "true"
+        provider._config["audit_log_path"] = str(audit_path)
+        provider.on_turn_start(7, "hello", session_id="s1")
+        provider._prefetch_thread.join(timeout=2)
+
+        record = json.loads(audit_path.read_text().splitlines()[-1])
+        assert record["inject"] is True
+        assert record["reason"] == "inject"
+        assert record["turn"] == 7
+        assert record["session"] == "s1"
+        assert record["injected"] == ["m1"]
 
     def test_old_tool_names_return_unknown(self, monkeypatch):
         backend = FakeBackend()
@@ -284,7 +389,7 @@ class TestMem0Prefetch:
         return provider
 
     def test_prefetch_searches_current_query(self):
-        backend = FakeBackend(search_results=[{"id": "m1", "memory": "user prefers dark mode"}])
+        backend = FakeBackend(search_results=[explicit_memory("m1", "user prefers dark mode")])
         provider = self._make_provider(backend)
         result = provider.prefetch("what theme do I like?")
         kind, query, opts = backend.captured[0]
@@ -298,13 +403,13 @@ class TestMem0Prefetch:
 
     def test_prefetch_returns_memories_on_first_call(self):
         # No prior queue_prefetch / warm — the very first call must still recall.
-        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        backend = FakeBackend(search_results=[explicit_memory("m1", "lives in Berlin")])
         provider = self._make_provider(backend)
         result = provider.prefetch("where do I live?")
         assert "lives in Berlin" in result
 
     def test_on_turn_start_queues_current_query(self):
-        backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+        backend = FakeBackend(search_results=[explicit_memory("m1", "lives in Berlin")])
         provider = self._make_provider(backend)
         provider.on_turn_start(1, "where do I live?")
         provider._prefetch_thread.join(timeout=1)
@@ -320,7 +425,7 @@ class TestMem0Prefetch:
 
         monkeypatch.setattr(mem0_plugin, "_PREFETCH_WAIT_SECS", 0.01)
         provider = self._make_provider(
-            SlowBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
+            SlowBackend(search_results=[explicit_memory("m1", "lives in Berlin")])
         )
         started = time.monotonic()
         assert provider.prefetch("where do I live?") == ""
@@ -334,7 +439,7 @@ class TestMem0Prefetch:
         assert provider.prefetch("anything") == ""
 
     def test_prefetch_skips_when_breaker_open(self):
-        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        backend = FakeBackend(search_results=[explicit_memory("m1", "x")])
         provider = self._make_provider(backend)
         provider._consecutive_failures = 5
         provider._breaker_open_until = float("inf")
@@ -344,7 +449,7 @@ class TestMem0Prefetch:
     def test_queue_prefetch_fires_no_search(self):
         # prefetch is synchronous now, so the post-turn warm is redundant and
         # must not fire a wasted backend search.
-        backend = FakeBackend(search_results=[{"id": "m1", "memory": "x"}])
+        backend = FakeBackend(search_results=[explicit_memory("m1", "x")])
         provider = self._make_provider(backend)
         provider.queue_prefetch("previous turn text")
         assert backend.captured == []
@@ -509,6 +614,7 @@ class TestMem0WriteMetadata:
 
     def _make_provider(self, channel: str = "cli"):
         provider = Mem0MemoryProvider()
+        provider._config = {}
         provider._user_id = "u123"
         provider._agent_id = "hermes"
         provider._channel = channel
@@ -519,17 +625,24 @@ class TestMem0WriteMetadata:
         provider = self._make_provider("telegram")
         provider.handle_tool_call("mem0_add", {"content": "user likes dark mode"})
         call = provider._backend.captured[-1]
-        assert call[2]["metadata"] == {"channel": "telegram"}
+        assert call[2]["metadata"]["channel"] == "telegram"
+        assert call[2]["metadata"]["source"] == "explicit"
 
     def test_sync_turn_passes_channel_metadata(self):
         provider = self._make_provider("discord")
+        provider._config.update({
+            "auto_add_enabled": "true",
+            "inference_enabled": "true",
+            "candidate_user_id": "candidate-user",
+        })
         provider.sync_turn("hi", "hello", session_id="s")
         # sync_turn fires a daemon thread; wait for it.
         if provider._sync_thread:
             provider._sync_thread.join(timeout=5.0)
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
-        assert adds[-1][2]["metadata"] == {"channel": "discord"}
+        assert adds[-1][2]["metadata"]["channel"] == "discord"
+        assert adds[-1][2]["metadata"]["source"] == "inferred"
 
 
 class _SentinelBackend:
@@ -540,15 +653,36 @@ class _SentinelBackend:
 class TestCreateBackendRouting:
     """_create_backend() must pick the backend matching the configured mode/host."""
 
-    def _provider(self, monkeypatch, *, mode="platform", api_key="k", host=""):
+    def _provider(self, monkeypatch, *, mode="platform", api_key="k", host="", base_url=""):
         # Neutralize lazy-install so the routing decision is all we exercise.
         monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None, raising=False)
         provider = Mem0MemoryProvider()
         provider._mode = mode
         provider._api_key = api_key
         provider._host = host
-        provider._config = {"oss": {"vector_store": {"provider": "qdrant"}}}
+        provider._config = {
+            "base_url": base_url,
+            "oss": {"vector_store": {"provider": "qdrant"}},
+        }
         return provider
+
+    def test_routes_to_local_rest_when_mode_local(self, monkeypatch):
+        captured = {}
+
+        class Local(_SentinelBackend):
+            def __init__(self, base_url, *, api_key, timeout):
+                captured["args"] = (base_url, api_key, timeout)
+
+        monkeypatch.setattr("plugins.memory.mem0._backend.LocalRESTBackend", Local)
+        provider = self._provider(
+            monkeypatch,
+            mode="local",
+            api_key="local-key",
+            base_url="http://local:8888",
+        )
+        backend = provider._create_backend()
+        assert isinstance(backend, Local)
+        assert captured["args"] == ("http://local:8888", "local-key", 60.0)
 
     def test_routes_to_selfhosted_when_host_set(self, monkeypatch):
         captured = {}

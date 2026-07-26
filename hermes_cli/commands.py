@@ -2132,6 +2132,47 @@ class SlashCommandAutoSuggest(AutoSuggest):
         return None
 
 
+class BoundedHistoryAutoSuggest(AutoSuggest):
+    """History suggestions that scan only recent loaded entries.
+
+    prompt_toolkit's AutoSuggestFromHistory copies and reverses the entire
+    loaded history for each keystroke. Large Hermes profiles can accumulate
+    tens of thousands of prompt entries, so keep the live prompt path bounded.
+    """
+
+    def __init__(self, limit: int = 1000) -> None:
+        self._limit = max(0, limit)
+
+    def get_suggestion(self, buffer, document):
+        if self._limit <= 0:
+            return None
+
+        text = document.text.rsplit("\n", 1)[-1]
+        if not text.strip():
+            return None
+
+        try:
+            history = buffer.history
+            loaded = getattr(history, "_loaded_strings", None)
+            if isinstance(loaded, list):
+                lock = getattr(history, "_lock", None)
+                if lock is not None:
+                    with lock:
+                        strings = list(loaded[: self._limit])
+                else:
+                    strings = loaded[: self._limit]
+            else:
+                strings = list(reversed(history.get_strings()))[: self._limit]
+
+            for string in strings:
+                for line in reversed(string.splitlines()):
+                    if line.startswith(text):
+                        return Suggestion(line[len(text):])
+        except Exception:
+            return None
+        return None
+
+
 def _file_size_label(path: str) -> str:
     """Return a compact human-readable file size, or '' on error."""
     try:

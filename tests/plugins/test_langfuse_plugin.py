@@ -171,6 +171,50 @@ class TestHooksInert:
         mod.on_post_tool_call(tool_name="read_file", args={}, result="ok", task_id="t", session_id="s")
 
 
+class TestGrokLangfuseDisabled:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"provider": "xai", "model": "grok-4.3"},
+            {"provider": "xai-oauth", "model": "grok-4.3"},
+            {"provider": "openrouter", "model": "xai/grok-4.3"},
+            {"provider": "openai-compatible", "base_url": "https://api.x.ai/v1"},
+        ],
+    )
+    def test_grok_request_hooks_short_circuit_before_client_init(self, monkeypatch, kwargs):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(
+            mod,
+            "_get_langfuse",
+            lambda: pytest.fail("Grok requests must not initialize Langfuse"),
+        )
+
+        mod.on_pre_llm_call(
+            task_id="t",
+            session_id="s",
+            messages=[{"role": "user", "content": "hi"}],
+            **kwargs,
+        )
+        mod.on_pre_llm_request(
+            task_id="t",
+            session_id="s",
+            request_messages=[{"role": "user", "content": "hi"}],
+            **kwargs,
+        )
+        mod.on_post_llm_call(
+            task_id="t",
+            session_id="s",
+            assistant_response="hello",
+            **kwargs,
+        )
+
+        assert mod._TRACE_STATE == {}
+
+
 class TestPayloadSanitization:
     def test_safe_value_redacts_base64_data_uri_instead_of_truncating(self):
         sys.modules.pop("plugins.observability.langfuse", None)

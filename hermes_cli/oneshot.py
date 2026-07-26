@@ -294,6 +294,37 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _parse_reasoning_config(effort: object) -> dict | None:
+    from hermes_constants import parse_reasoning_effort
+
+    return parse_reasoning_effort(str(effort or ""))
+
+
+def _parse_service_tier_config(raw: object) -> str | None:
+    value = str(raw or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    return None
+
+
+def _request_overrides_for_oneshot(cfg: dict, model: str, runtime: dict) -> tuple[dict | None, str | None, dict | None]:
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    reasoning_config = _parse_reasoning_config(agent_cfg.get("reasoning_effort", ""))
+    service_tier = _parse_service_tier_config(agent_cfg.get("service_tier", ""))
+    overrides = dict(runtime.get("request_overrides") or {})
+
+    if service_tier:
+        fast_overrides = resolve_fast_mode_overrides(model)
+        if fast_overrides:
+            overrides.update(fast_overrides)
+
+    return reasoning_config, service_tier, overrides or None
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -371,6 +402,11 @@ def _run_agent(
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
     )
+    reasoning_config, service_tier, request_overrides = _request_overrides_for_oneshot(
+        cfg,
+        effective_model,
+        runtime,
+    )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -396,6 +432,9 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        reasoning_config=reasoning_config,
+        service_tier=service_tier,
+        request_overrides=request_overrides,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

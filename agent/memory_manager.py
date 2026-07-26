@@ -3,14 +3,14 @@
 Single integration point in run_agent.py. Replaces scattered per-backend
 code with one manager that delegates to registered providers.
 
-Only ONE external plugin provider is allowed at a time — attempting to
-register a second external provider is rejected with a warning.  This
-prevents tool schema bloat and conflicting memory backends.
+Multiple external plugin providers may be active at once.  This lets a
+profile combine a curated memory backend with a separate lookup/reflection
+backend while keeping all provider fan-out behind one manager.
 
 Usage in run_agent.py:
     self._memory_manager = MemoryManager()
-    # Only ONE of these:
-    self._memory_manager.add_provider(plugin_provider)
+    for plugin_provider in plugin_providers:
+        self._memory_manager.add_provider(plugin_provider)
 
     # System prompt
     prompt_parts.append(self._memory_manager.build_system_prompt())
@@ -155,17 +155,37 @@ _INTERNAL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.[^\]]*\]\s*',
     re.IGNORECASE,
 )
+_MEMORY_CONTEXT_LABEL_RE = re.compile(
+    r'\[Memory context:\s*not written by Gismar;\s*may be stale\.\]\s*',
+    re.IGNORECASE,
+)
+_MEMORY_HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s+.*memory.*$', re.IGNORECASE)
+_MAX_MEMORY_CONTEXT_LINES = 12
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _MEMORY_CONTEXT_LABEL_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def _compact_memory_context(text: str, *, max_lines: int = _MAX_MEMORY_CONTEXT_LINES) -> str:
+    """Return at most max_lines meaningful memory lines, without provider headings."""
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or _MEMORY_HEADING_RE.match(line):
+            continue
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return "\n".join(lines)
 
 
 class StreamingContextScrubber:
@@ -340,27 +360,27 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    body = _compact_memory_context(clean)
+    if not body:
+        return ""
     return (
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        "[Memory context: not written by Gismar; may be stale.]\n"
+        f"{body}\n"
         "</memory-context>"
     )
 
 
 class MemoryManager:
-    """Orchestrates the built-in provider plus at most one external provider.
+    """Orchestrates built-in and external memory providers.
 
-    The builtin provider is always first. Only one non-builtin (external)
-    provider is allowed.  Failures in one provider never block the other.
+    Failures in one provider never block the others. Tool-name conflicts are
+    resolved first-wins so providers can safely coexist.
     """
 
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._has_external: bool = False  # True once a non-builtin provider is added
         # Background executor for end-of-turn sync/prefetch. Lazily created on
         # first use so the common builtin-only path spawns no extra threads.
         # A single worker serializes a provider's writes (turn N must land
@@ -374,26 +394,15 @@ class MemoryManager:
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a memory provider.
 
-        Built-in provider (name ``"builtin"``) is always accepted.
-        Only **one** external (non-builtin) provider is allowed — a second
-        attempt is rejected with a warning.
+        Providers are kept in registration order. Registering a duplicate
+        provider name is ignored to avoid double writes and duplicate tools.
         """
-        is_builtin = provider.name == "builtin"
-
-        if not is_builtin:
-            if self._has_external:
-                existing = next(
-                    (p.name for p in self._providers if p.name != "builtin"), "unknown"
-                )
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
-                    provider.name, existing,
-                )
-                return
-            self._has_external = True
+        if any(existing.name == provider.name for existing in self._providers):
+            logger.warning(
+                "Duplicate memory provider '%s' ignored; already registered.",
+                provider.name,
+            )
+            return
 
         self._providers.append(provider)
 

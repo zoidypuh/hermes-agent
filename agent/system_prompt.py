@@ -179,6 +179,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
+    # Composite prompt mode. The active profile owns soul.md; frontlobe.md,
+    # memory.md, and projects.md always come from the root ~/.hermes directory.
+    # The assembled fragments become the stable system prompt. Legacy identity/
+    # context/memory/timestamp/platform layers and generated tool/skill guidance
+    # are skipped.
+    _profile_system_content = getattr(_r, "load_profile_system_md", lambda *_args, **_kwargs: None)(_ctx_len)
+    if _profile_system_content:
+        stable_parts.append(_profile_system_content)
+        return {
+            "stable": "\n\n".join(p.strip() for p in stable_parts if p and p.strip()),
+            "context": (system_message or "").strip(),
+            "volatile": "",
+        }
+
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.

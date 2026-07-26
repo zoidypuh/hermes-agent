@@ -47,6 +47,12 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _legacy_prompt_stack(monkeypatch):
+    """Most run_agent tests exercise the legacy layered prompt stack directly."""
+    monkeypatch.setattr(run_agent, "load_profile_system_md", lambda *_args, **_kwargs: "")
+
+
 def test_is_destructive_command_treats_cp_as_mutating():
     assert run_agent._is_destructive_command("cp .env.local .env") is True
 
@@ -103,6 +109,7 @@ def agent():
             "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.load_profile_system_md", return_value=""),
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
@@ -152,6 +159,7 @@ def agent_with_memory_tool():
             return_value=_make_tool_defs("web_search", "memory"),
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.load_profile_system_md", return_value=""),
         patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
@@ -1236,6 +1244,7 @@ class TestBuildSystemPrompt:
             patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
+            patch("run_agent.load_profile_system_md", return_value=""),
             patch("run_agent.load_soul_md", return_value="SOUL IDENTITY"),
         ):
             agent = AIAgent(
@@ -1317,6 +1326,7 @@ class TestBuildSystemPrompt:
             patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
             patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
             patch("run_agent.OpenAI"),
+            patch("run_agent.load_profile_system_md", return_value=""),
         ):
             agent = AIAgent(
                 api_key="test-k...7890",

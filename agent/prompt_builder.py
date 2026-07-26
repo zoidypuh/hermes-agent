@@ -13,7 +13,7 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import get_default_hermes_root, get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1845,6 +1845,94 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
+
+_PROFILE_SYSTEM_FRAGMENT_NAMES = ("soul.md", "frontlobe.md", "memory.md", "projects.md")
+
+
+def _profile_prompt_root(profile_home: Path) -> Path:
+    """Root Hermes dir for shared composite prompt fragments."""
+    if profile_home.parent.name == "profiles":
+        return profile_home.parent.parent
+    return get_default_hermes_root()
+
+
+def _case_insensitive_fragment_path(directory: Path, filename: str) -> Path:
+    """Return *filename* in *directory*, accepting case-only variants.
+
+    Exact canonical lowercase names win when present.  The fallback is scoped to
+    the same directory only, so root ``memory.md`` never resolves to
+    ``memories/MEMORY.md``.
+    """
+    exact = directory / filename
+    if exact.is_file():
+        return exact
+
+    try:
+        matches = sorted(
+            entry
+            for entry in directory.iterdir()
+            if entry.is_file() and entry.name.casefold() == filename.casefold()
+        )
+    except OSError:
+        return exact
+
+    return matches[0] if matches else exact
+
+
+def load_profile_system_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load the strict composite system prompt for the active profile.
+
+    The prompt is assembled in order from active-profile ``soul.md``, then root
+    ``frontlobe.md``, root ``memory.md``, and root ``projects.md``.
+    ``frontlobe.md``, ``memory.md``, and ``projects.md`` always come from the
+    default Hermes root, not a named profile. All four must exist and contain
+    non-whitespace content. Root ``memory.md`` is prompt material and is
+    intentionally distinct from the built-in memory store at
+    ``memories/MEMORY.md``.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading composite prompt fragments: %s", e)
+
+    profile_home = get_hermes_home()
+    hermes_root = _profile_prompt_root(profile_home)
+    missing_or_empty: list[Path] = []
+    fragments: list[str] = []
+
+    for name in _PROFILE_SYSTEM_FRAGMENT_NAMES:
+        fragment_dir = profile_home if name == "soul.md" else hermes_root
+        fragment_path = _case_insensitive_fragment_path(fragment_dir, name)
+        if not fragment_path.is_file():
+            missing_or_empty.append(fragment_path)
+            continue
+        try:
+            content = fragment_path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not read profile system prompt fragment {fragment_path}: {e}"
+            ) from e
+        if not content:
+            missing_or_empty.append(fragment_path)
+            continue
+        content = _scan_context_content(content, name)
+        fragments.append(
+            _truncate_content(
+                content, name, context_length=context_length,
+                read_path=str(fragment_path),
+            )
+        )
+
+    if missing_or_empty:
+        paths = ", ".join(str(path) for path in missing_or_empty)
+        raise RuntimeError(
+            "Profile composite system prompt requires non-empty files: "
+            f"{paths}"
+        )
+
+    return "\n\n".join(fragments).strip()
 
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:

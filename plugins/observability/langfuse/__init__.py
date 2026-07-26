@@ -101,6 +101,19 @@ def _debug(message: str) -> None:
         logger.info("Langfuse tracing: %s", message)
 
 
+def _is_grok_request(*, provider: str = "", model: str = "", base_url: str = "") -> bool:
+    provider_norm = (provider or "").strip().lower()
+    model_norm = (model or "").strip().lower()
+    base_url_norm = (base_url or "").strip().lower()
+
+    return (
+        provider_norm in {"xai", "xai-oauth", "x-ai"}
+        or "api.x.ai" in base_url_norm
+        or model_norm.startswith(("grok", "xai/", "x-ai/"))
+        or "/grok" in model_norm
+    )
+
+
 # Sentinel: "_get_langfuse() has tried and failed". Lets us short-circuit
 # every subsequent hook call without re-checking env vars or re-attempting
 # SDK init. Tests clear this by reloading the module via
@@ -779,6 +792,9 @@ def on_pre_llm_call(*, task_id: str = "", session_id: str = "", platform: str = 
                     api_call_count: int = 0, messages: Any = None, turn_type: str = "user",
                     conversation_history: Any = None, user_message: Any = None,
                     turn_id: str = "", api_request_id: str = "", **_: Any) -> None:
+    if _is_grok_request(provider=provider, model=model, base_url=base_url):
+        return
+
     # Older Hermes branches used pre_llm_call for request-scoped tracing and
     # passed the actual API messages. Current Hermes also has a turn-scoped
     # pre_llm_call used for context injection; tracing that hook creates an
@@ -847,6 +863,9 @@ def on_pre_llm_request(
     api_request_id: str = "",
     **_: Any,
 ) -> None:
+    if _is_grok_request(provider=provider, model=model, base_url=base_url):
+        return
+
     client = _get_langfuse()
     if client is None:
         return
@@ -913,6 +932,9 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                      assistant_tool_call_count: int = 0, assistant_response: Any = None,
                      turn_id: str = "", api_request_id: str = "",
                      **_: Any) -> None:
+    if _is_grok_request(provider=provider, model=model, base_url=base_url):
+        return
+
     client = _get_langfuse()
     if client is None:
         return

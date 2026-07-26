@@ -15,9 +15,10 @@ Secret (lives in $HERMES_HOME/.env or the environment):
 
 Behavioral settings (live in $HERMES_HOME/mem0.json, set via `hermes memory
 setup`):
-  mode               — Backend mode: "platform" (default) or "oss"
+  mode               — Backend mode: "platform" (default), "oss", or "local"
   host               — Self-hosted Mem0 server URL (alt: MEM0_HOST env var).
                        When set, routes to the self-hosted HTTP backend.
+  base_url           — Base URL for the explicit "local" REST mode.
   user_id            — Canonical user identifier. When set, it is applied
                        uniformly across every gateway (CLI, Telegram, Slack,
                        Discord, …) so the same human gets one merged memory
@@ -33,9 +34,11 @@ home for these non-secret settings.
 from __future__ import annotations
 
 import atexit
+from datetime import datetime, timezone
 import json
 import logging
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any, Dict, List
@@ -50,6 +53,11 @@ logger = logging.getLogger(__name__)
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
 _PREFETCH_WAIT_SECS = 3
+_MAX_PREFETCH_TOP_K = 3
+_DEFAULT_SEARCH_TOP_K = 10
+_DEFAULT_INJECTION_THRESHOLD = 0.7
+_RECENCY_BLOCK_SECONDS = 10 * 60
+_SAME_SESSION_BLOCK_SECONDS = 60 * 60
 
 _CLIENT_ERROR_TYPES = ("MemoryNotFoundError", "ValidationError")
 
@@ -68,6 +76,84 @@ def _is_client_error(exc: Exception) -> bool:
         return True
     err_str = str(exc).lower()
     return "404" in err_str or "not found" in err_str or "valid uuid" in err_str
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat()
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _parse_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _memory_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = item.get("metadata") or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _memory_source(item: dict[str, Any]) -> str:
+    metadata = _memory_metadata(item)
+    return str(item.get("source") or metadata.get("source") or "").strip().lower()
+
+
+def _memory_created_at(item: dict[str, Any]) -> datetime | None:
+    metadata = _memory_metadata(item)
+    return _parse_time(item.get("created_at") or metadata.get("created_at_iso") or metadata.get("created_at"))
+
+
+def _memory_session_id(item: dict[str, Any]) -> str:
+    metadata = _memory_metadata(item)
+    return str(
+        item.get("session_id")
+        or item.get("source_session_id")
+        or metadata.get("session_id")
+        or metadata.get("source_session_id")
+        or ""
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +233,11 @@ ADD_SCHEMA = {
         "type": "object",
         "properties": {
             "content": {"type": "string", "description": "The fact to store."},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional short tags for the stored fact.",
+            },
         },
         "required": ["content"],
     },
@@ -193,7 +284,7 @@ DELETE_SCHEMA = {
 class Mem0MemoryProvider(MemoryProvider):
     """Mem0 memory with server-side extraction and semantic search.
 
-    Supports Platform API (cloud) and OSS (self-hosted) modes via MEM0_MODE.
+    Supports Platform API, self-hosted HTTP, local REST, and OSS modes.
     """
 
     def __init__(self):
@@ -205,7 +296,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = _DEFAULT_USER_ID
         self._agent_id = "hermes"
         self._rerank_default = False
+        self._session_id = ""
+        self._hermes_home = None
         self._channel = "cli"  # gateway channel name (cli/telegram/discord/...)
+        self._turn_number = 0
         self._sync_thread = None
         self._prefetch_thread = None
         self._prefetch_query = ""
@@ -226,6 +320,8 @@ class Mem0MemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         cfg = _load_config()
         mode = cfg.get("mode", "platform")
+        if mode == "local":
+            return bool(cfg.get("base_url"))
         if mode == "oss":
             return bool(cfg.get("oss", {}).get("vector_store"))
         # Platform needs an api_key; self-hosted needs a host (api_key optional
@@ -254,6 +350,7 @@ class Mem0MemoryProvider(MemoryProvider):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},
+            {"key": "base_url", "description": "Local Mem0 REST API URL (local mode only)", "required": False},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
@@ -277,6 +374,14 @@ class Mem0MemoryProvider(MemoryProvider):
         except Exception:
             pass
         try:
+            if self._mode == "local":
+                from ._backend import LocalRESTBackend
+                timeout = float(self._config.get("timeout", 60) or 60)
+                return LocalRESTBackend(
+                    self._config.get("base_url", ""),
+                    api_key=self._api_key,
+                    timeout=timeout,
+                )
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))
@@ -302,11 +407,16 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def _format_error(self, prefix: str, exc: Exception) -> str:
         msg = f"{prefix}: {exc}"
-        if self._mode == "oss":
+        if self._mode in {"local", "oss"} or self._host:
             err_str = str(exc).lower()
             if "connection" in err_str or "refused" in err_str or "timeout" in err_str:
-                vs = self._config.get("oss", {}).get("vector_store", {})
-                msg += f" (check that {vs.get('provider', 'vector store')} is running)"
+                if self._mode == "local":
+                    msg += f" (check that {self._config.get('base_url', 'local Mem0')} is running)"
+                elif self._host:
+                    msg += f" (check that {self._host} is running and reachable)"
+                else:
+                    vs = self._config.get("oss", {}).get("vector_store", {})
+                    msg += f" (check that {vs.get('provider', 'vector store')} is running)"
         return msg
 
     def _record_success(self):
@@ -327,6 +437,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 vs = self._config.get("oss", {}).get("vector_store", {})
                 provider = vs.get("provider", "unknown")
                 hint = f" Check that your {provider} vector store is running and reachable."
+            elif self._host:
+                hint = f" Check that {self._host} is running and reachable."
             logger.warning(
                 "Mem0 circuit breaker tripped after %d consecutive failures. "
                 "Pausing API calls for %ds.%s",
@@ -338,6 +450,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
         self._host = self._config.get("host", "")
+        self._session_id = session_id
+        self._hermes_home = Path(kwargs.get("hermes_home") or os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
         # Resolution order for user_id:
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
@@ -368,6 +482,33 @@ class Mem0MemoryProvider(MemoryProvider):
             atexit.register(self._shutdown_backend)
             self._atexit_registered = True
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        rewound: bool = False,
+        **kwargs,
+    ) -> None:
+        self._session_id = new_session_id
+
+    def _config_bool(self, key: str, default: bool = False) -> bool:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        return _parse_bool(cfg.get(key), default)
+
+    def _write_enabled(self) -> bool:
+        return self._config_bool("write_enabled", True)
+
+    def _auto_add_enabled(self) -> bool:
+        return self._config_bool("auto_add_enabled", False)
+
+    def _inference_enabled(self) -> bool:
+        return self._config_bool("inference_enabled", False)
+
+    def _auto_inject_enabled(self) -> bool:
+        return self._config_bool("auto_inject_enabled", True)
+
     def _read_filters(self) -> Dict[str, Any]:
         # Scoped to user_id only — by design — so recall surfaces memories
         # written from any gateway/agent under this principal. Writes attach
@@ -376,17 +517,188 @@ class Mem0MemoryProvider(MemoryProvider):
         # cross-agent recall.
         return {"user_id": self._user_id}
 
-    def _write_metadata(self) -> Dict[str, Any]:
+    def _read_user_ids(self) -> list[str]:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        configured = cfg.get("read_user_ids")
+        if isinstance(configured, str):
+            items = [part.strip() for part in configured.replace(";", ",").split(",")]
+        elif isinstance(configured, list):
+            items = [str(part).strip() for part in configured]
+        else:
+            items = []
+        if self._config_bool("candidate_read_enabled", False):
+            candidate_user_id = str(cfg.get("candidate_user_id") or "").strip()
+            if candidate_user_id:
+                items.append(candidate_user_id)
+        items = [item for item in items if item]
+        if not items:
+            items = [self._user_id]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        return deduped
+
+    def _write_metadata(self, extra: dict[str, Any] | None = None) -> Dict[str, Any]:
         # Tag every write with the gateway channel so the dashboard can offer
         # per-channel filtered views without coupling identity to the channel.
-        return {"channel": self._channel} if self._channel else {}
+        metadata = {"channel": self._channel} if self._channel else {}
+        if extra:
+            metadata.update({key: value for key, value in extra.items() if value is not None})
+        return metadata
+
+    def _prefetch_top_k(self) -> int:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        try:
+            configured = int(cfg.get("prefetch_top_k", _MAX_PREFETCH_TOP_K))
+        except (TypeError, ValueError):
+            configured = _MAX_PREFETCH_TOP_K
+        return max(1, min(configured, _MAX_PREFETCH_TOP_K))
+
+    def _search_top_k(self) -> int:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        return max(1, min(_parse_int(cfg.get("search_top_k"), _DEFAULT_SEARCH_TOP_K), 50))
+
+    def _injection_threshold(self) -> float:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        value = cfg.get("rerank_threshold", cfg.get("similarity_threshold"))
+        return _parse_float(value, _DEFAULT_INJECTION_THRESHOLD)
+
+    def _audit_path(self) -> Path:
+        cfg = self._config if isinstance(self._config, dict) else {}
+        configured = str(cfg.get("audit_log_path") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        home = self._hermes_home or Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+        return Path(home) / "logs" / "mem0_live_injection_audit.jsonl"
+
+    def _search_all_read_users(self, backend, query: str, *, top_k: int, rerank: bool) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for user_id in self._read_user_ids():
+            for item in backend.search(query=query, filters={"user_id": user_id}, top_k=top_k, rerank=rerank):
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("id") or "")
+                key = item_id or f"{user_id}:{item.get('memory', '')}"
+                if key in seen_ids:
+                    continue
+                seen_ids.add(key)
+                merged.append(item)
+        merged.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+        return merged[:top_k]
+
+    def _candidate_audit_item(
+        self,
+        item: dict[str, Any],
+        *,
+        now: datetime,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        created_at = _memory_created_at(item)
+        age_seconds = None
+        if created_at:
+            age_seconds = max(0, int((now - created_at).total_seconds()))
+        return {
+            "id": item.get("id"),
+            "text": item.get("memory", ""),
+            "score": item.get("score"),
+            "created_at": item.get("created_at") or _memory_metadata(item).get("created_at_iso"),
+            "source": _memory_source(item),
+            "age_seconds": age_seconds,
+            "reason": reason,
+        }
+
+    def _select_injected_memories(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        session_id: str,
+        top_k: int,
+        now: datetime,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+        injected: list[dict[str, Any]] = []
+        audited: list[dict[str, Any]] = []
+        first_block_reason = "empty"
+        threshold = self._injection_threshold()
+        active_session_id = session_id or self._session_id
+        for item in results:
+            reason = "inject"
+            score = item.get("score")
+            if score is not None:
+                try:
+                    if float(score) < threshold:
+                        reason = "below_threshold"
+                except (TypeError, ValueError):
+                    pass
+            source = _memory_source(item)
+            if reason == "inject" and source != "explicit":
+                reason = "inferred_block"
+            created_at = _memory_created_at(item)
+            age_seconds = None
+            if created_at:
+                age_seconds = max(0, int((now - created_at).total_seconds()))
+            if reason == "inject" and age_seconds is not None and age_seconds < _RECENCY_BLOCK_SECONDS:
+                reason = "recency_block"
+            if (
+                reason == "inject"
+                and active_session_id
+                and _memory_session_id(item) == active_session_id
+                and age_seconds is not None
+                and age_seconds < _SAME_SESSION_BLOCK_SECONDS
+            ):
+                reason = "same_session_block"
+            audited.append(self._candidate_audit_item(item, now=now, reason=reason))
+            if reason == "inject" and len(injected) < top_k:
+                injected.append(item)
+            elif reason != "inject" and first_block_reason == "empty":
+                first_block_reason = reason
+        reason = "inject" if injected else first_block_reason
+        return injected, audited, reason
+
+    def _write_injection_audit(
+        self,
+        *,
+        inject: bool,
+        reason: str,
+        mode: str,
+        session_id: str,
+        query: str,
+        candidates: list[dict[str, Any]],
+        injected: list[dict[str, Any]],
+    ) -> None:
+        if not self._config_bool("audit_log_enabled", True):
+            return
+        record = {
+            "timestamp": _utc_now_iso(),
+            "inject": inject,
+            "reason": reason,
+            "turn": self._turn_number,
+            "mode": mode,
+            "session": session_id or self._session_id,
+            "query": query,
+            "candidates": candidates,
+            "injected": [item.get("id") for item in injected],
+        }
+        try:
+            path = self._audit_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            logger.debug("Failed to write Mem0 injection audit", exc_info=True)
 
     def system_prompt_block(self) -> str:
-        # Mirror the precedence in _create_backend (oss > host > platform) so
+        # Mirror the precedence in _create_backend (local > oss > host >
+        # platform) so
         # the label always names the backend that actually runs. Checking
         # ``host`` first here would mislabel an ``oss``+``host`` config as
         # self-hosted HTTP even though OSS wins the routing.
-        if self._mode == "oss":
+        if self._mode == "local":
+            mode_label = f"local REST API ({self._config.get('base_url', 'unconfigured')})"
+        elif self._mode == "oss":
             mode_label = "OSS (self-hosted)"
         elif self._host:
             mode_label = "self-hosted (HTTP API)"
@@ -411,7 +723,8 @@ class Mem0MemoryProvider(MemoryProvider):
         )
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        self._start_prefetch(message)
+        self._turn_number = turn_number
+        self._start_prefetch(message, session_id=kwargs.get("session_id", ""))
 
     def _consume_prefetch_result(self, query: str) -> str | None:
         with self._prefetch_lock:
@@ -422,10 +735,26 @@ class Mem0MemoryProvider(MemoryProvider):
             self._prefetch_done = False
             return result
 
-    def _start_prefetch(self, query: str) -> None:
+    def _start_prefetch(self, query: str, *, session_id: str = "") -> None:
         if not query or self._backend is None or self._is_breaker_open():
             return
         backend = self._backend
+        if not self._auto_inject_enabled():
+            with self._prefetch_lock:
+                self._prefetch_query = query
+                self._prefetch_result = ""
+                self._prefetch_done = True
+            self._write_injection_audit(
+                inject=False,
+                reason="empty",
+                mode="disabled",
+                session_id=session_id,
+                query=query,
+                candidates=[],
+                injected=[],
+            )
+            return
+
         with self._prefetch_lock:
             if self._prefetch_query == query:
                 if self._prefetch_done:
@@ -439,15 +768,44 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             body = ""
             try:
-                results = backend.search(
-                    query, filters=self._read_filters(), top_k=10, rerank=False,
+                inject_top_k = self._prefetch_top_k()
+                results = self._search_all_read_users(
+                    backend,
+                    query,
+                    top_k=max(self._search_top_k(), inject_top_k),
+                    rerank=False,
                 )
-                lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
-                if lines:
+                now = _utc_now()
+                injected, candidates, reason = self._select_injected_memories(
+                    results,
+                    session_id=session_id,
+                    top_k=inject_top_k,
+                    now=now,
+                )
+                if injected:
+                    lines = [r.get("memory", "") for r in injected if r.get("memory")]
                     body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines)
+                self._write_injection_audit(
+                    inject=bool(injected),
+                    reason=reason,
+                    mode="auto",
+                    session_id=session_id,
+                    query=query,
+                    candidates=candidates,
+                    injected=injected,
+                )
                 self._record_success()
             except Exception as e:
                 self._record_failure()
+                self._write_injection_audit(
+                    inject=False,
+                    reason="provider_error",
+                    mode="auto",
+                    session_id=session_id,
+                    query=query,
+                    candidates=[],
+                    injected=[],
+                )
                 logger.debug("Mem0 prefetch failed: %s", e)
             with self._prefetch_lock:
                 if self._prefetch_query == query:
@@ -464,7 +822,7 @@ class Mem0MemoryProvider(MemoryProvider):
         cached = self._consume_prefetch_result(query)
         if cached is not None:
             return cached
-        self._start_prefetch(query)
+        self._start_prefetch(query, session_id=session_id)
         with self._prefetch_lock:
             thread = self._prefetch_thread if self._prefetch_query == query else None
         if thread:
@@ -476,8 +834,15 @@ class Mem0MemoryProvider(MemoryProvider):
         return ""
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        """Optionally send a turn to the non-injected candidate namespace."""
         if self._backend is None or self._is_breaker_open():
+            return
+        if not (self._auto_add_enabled() and self._inference_enabled()):
+            return
+        cfg = self._config if isinstance(self._config, dict) else {}
+        candidate_user_id = str(cfg.get("candidate_user_id") or "").strip()
+        if not candidate_user_id:
+            logger.debug("Mem0 auto-add enabled but candidate_user_id is not configured; skipping turn sync")
             return
 
         def _sync():
@@ -491,10 +856,15 @@ class Mem0MemoryProvider(MemoryProvider):
                 ]
                 backend.add(
                     messages,
-                    user_id=self._user_id,
+                    user_id=candidate_user_id,
                     agent_id=self._agent_id,
                     infer=True,
-                    metadata=self._write_metadata(),
+                    metadata=self._write_metadata({
+                        "source": "inferred",
+                        "source_session_id": session_id or self._session_id,
+                        "created_at_iso": _utc_now_iso(),
+                        "status": "pending",
+                    }),
                 )
                 self._record_success()
             except Exception as e:
@@ -541,7 +911,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     rerank = rerank_raw.lower() not in ("false", "0", "no")
                 else:
                     rerank = bool(rerank_raw)
-                results = self._backend.search(query, filters=self._read_filters(), top_k=top_k, rerank=rerank)
+                results = self._search_all_read_users(self._backend, query, top_k=top_k, rerank=rerank)
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -557,18 +927,33 @@ class Mem0MemoryProvider(MemoryProvider):
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            if not self._write_enabled():
+                return tool_error("Mem0 writes are disabled by config.")
+            raw_tags = args.get("tags") or []
+            if isinstance(raw_tags, str):
+                tags = [raw_tags]
+            elif isinstance(raw_tags, list):
+                tags = [str(item) for item in raw_tags if str(item).strip()]
+            else:
+                tags = []
             try:
                 result = self._backend.add(
                     [{"role": "user", "content": content}],
                     user_id=self._user_id,
                     agent_id=self._agent_id,
                     infer=False,
-                    metadata=self._write_metadata(),
+                    metadata=self._write_metadata({
+                        "source": "explicit",
+                        "session_id": self._session_id,
+                        "source_session_id": self._session_id,
+                        "created_at_iso": _utc_now_iso(),
+                        "tags": tags,
+                    }),
                 )
                 self._record_success()
                 event_id = result.get("event_id") if isinstance(result, dict) else None
                 # Cloud add is async (server-side extraction); OSS and self-hosted store synchronously.
-                msg = "Fact stored." if (self._mode == "oss" or self._host) else "Fact queued for storage."
+                msg = "Fact stored." if (self._mode in {"local", "oss"} or self._host) else "Fact queued for storage."
                 return json.dumps({"result": msg, "event_id": event_id})
             except Exception as e:
                 self._record_failure()
