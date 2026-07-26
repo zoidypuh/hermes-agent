@@ -4,6 +4,7 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 """
 
 import json
+import time
 import pytest
 
 from plugins.memory.mem0 import Mem0MemoryProvider
@@ -12,15 +13,20 @@ from plugins.memory.mem0 import Mem0MemoryProvider
 class FakeClientV2:
     """Fake Mem0 client that returns v2-style dict responses and captures call kwargs."""
 
-    def __init__(self, search_results=None, all_results=None):
+    def __init__(self, search_results=None, all_results=None, search_delay=0):
         self._search_results = search_results or {"results": []}
         self._all_results = all_results or {"results": []}
+        self._search_delay = search_delay
         self.captured_search = {}
+        self.search_calls = []
         self.captured_get_all = {}
         self.captured_add = []
 
     def search(self, **kwargs):
+        if self._search_delay:
+            time.sleep(self._search_delay)
         self.captured_search = kwargs
+        self.search_calls.append(kwargs)
         return self._search_results
 
     def get_all(self, **kwargs):
@@ -196,6 +202,85 @@ class TestMem0ResponseUnwrapping:
         result = provider.prefetch("preferences")
 
         assert "dark mode" in result
+
+
+# ---------------------------------------------------------------------------
+# Current-turn automatic recall
+# ---------------------------------------------------------------------------
+
+
+class TestMem0CurrentTurnPrefetch:
+    """Automatic recall should be available to the prompt being built now."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._prefetch_timeout = 0
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_prefetch_searches_current_query_immediately(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"memory": "user wants mem0 injected into the same prompt"}]
+        })
+        provider = self._make_provider(monkeypatch, client)
+
+        result = provider.prefetch("how should mem0 be injected?")
+
+        assert "same prompt" in result
+        assert client.captured_search["query"] == "how should mem0 be injected?"
+        assert client.captured_search["filters"] == {"user_id": "u123"}
+        assert client.captured_search["top_k"] == 5
+
+    def test_hybrid_discards_stale_warmed_query(self, monkeypatch):
+        client = FakeClientV2(search_results={"results": []})
+        provider = self._make_provider(monkeypatch, client)
+        provider._prefetch_mode = "hybrid"
+        provider._prefetch_result = "- old one-late memory"
+        provider._prefetch_query = "old prompt"
+
+        result = provider.prefetch("new prompt")
+
+        assert result == ""
+
+    def test_hybrid_uses_same_query_warmed_result_after_timeout(self, monkeypatch):
+        client = FakeClientV2(
+            search_results={"results": [{"memory": "slow live result"}]},
+            search_delay=0.05,
+        )
+        provider = self._make_provider(monkeypatch, client)
+        provider._prefetch_mode = "hybrid"
+        provider._prefetch_timeout = 0.001
+        provider._prefetch_result = "- same query warmed memory"
+        provider._prefetch_query = "same prompt"
+
+        result = provider.prefetch("same prompt")
+
+        assert "same query warmed memory" in result
+
+    def test_current_mode_skips_background_warming(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+        provider._prefetch_mode = "current"
+
+        provider.queue_prefetch("do not warm")
+
+        assert provider._prefetch_thread is None
+        assert client.search_calls == []
+
+    def test_warmed_mode_preserves_legacy_cached_result(self, monkeypatch):
+        client = FakeClientV2(search_results={
+            "results": [{"memory": "legacy warmed result"}]
+        })
+        provider = self._make_provider(monkeypatch, client)
+        provider._prefetch_mode = "warmed"
+
+        provider.queue_prefetch("old prompt")
+        provider._prefetch_thread.join(timeout=2)
+        result = provider.prefetch("different prompt")
+
+        assert "legacy warmed result" in result
 
 
 # ---------------------------------------------------------------------------

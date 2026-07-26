@@ -9,6 +9,9 @@ Config via environment variables:
   MEM0_API_KEY       — Mem0 Platform API key (required)
   MEM0_USER_ID       — User identifier (default: hermes-user)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
+  MEM0_PREFETCH_MODE — hybrid/current/warmed (default: hybrid)
+  MEM0_PREFETCH_TIMEOUT — current-turn recall timeout in seconds (default: 2.5)
+  MEM0_PREFETCH_TOP_K — max memories for automatic recall (default: 5)
 
 Or via $HERMES_HOME/mem0.json.
 """
@@ -31,6 +34,7 @@ logger = logging.getLogger(__name__)
 # for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
 _BREAKER_THRESHOLD = 5
 _BREAKER_COOLDOWN_SECS = 120
+_PREFETCH_MODES = {"hybrid", "current", "warmed"}
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +56,9 @@ def _load_config() -> dict:
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
         "keyword_search": False,
+        "prefetch_mode": os.environ.get("MEM0_PREFETCH_MODE", "hybrid"),
+        "prefetch_timeout": os.environ.get("MEM0_PREFETCH_TIMEOUT", "2.5"),
+        "prefetch_top_k": os.environ.get("MEM0_PREFETCH_TOP_K", "5"),
     }
 
     config_path = get_hermes_home() / "mem0.json"
@@ -127,7 +134,11 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
+        self._prefetch_mode = "hybrid"
+        self._prefetch_timeout = 2.5
+        self._prefetch_top_k = 5
         self._prefetch_result = ""
+        self._prefetch_query = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
         self._sync_thread = None
@@ -163,6 +174,9 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
+            {"key": "prefetch_mode", "description": "Automatic recall mode", "default": "hybrid", "choices": ["hybrid", "current", "warmed"]},
+            {"key": "prefetch_timeout", "description": "Current-turn recall timeout in seconds", "default": "2.5"},
+            {"key": "prefetch_top_k", "description": "Max memories for automatic recall", "default": "5"},
         ]
 
     def _get_client(self):
@@ -200,6 +214,47 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._consecutive_failures, _BREAKER_COOLDOWN_SECS,
             )
 
+    @staticmethod
+    def _coerce_float(value: Any, default: float, *, minimum: float = 0.0, maximum: float = 30.0) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed < minimum:
+            return minimum
+        if parsed > maximum:
+            return maximum
+        return parsed
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int, *, minimum: int = 1, maximum: int = 50) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        if parsed < minimum:
+            return minimum
+        if parsed > maximum:
+            return maximum
+        return parsed
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+        return default
+
+    @staticmethod
+    def _normalize_prefetch_mode(value: Any) -> str:
+        mode = str(value or "hybrid").strip().lower()
+        return mode if mode in _PREFETCH_MODES else "hybrid"
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
@@ -207,7 +262,22 @@ class Mem0MemoryProvider(MemoryProvider):
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
-        self._rerank = self._config.get("rerank", True)
+        self._rerank = self._coerce_bool(self._config.get("rerank", True), True)
+        self._prefetch_mode = self._normalize_prefetch_mode(
+            self._config.get("prefetch_mode", "hybrid")
+        )
+        self._prefetch_timeout = self._coerce_float(
+            self._config.get("prefetch_timeout", 2.5),
+            2.5,
+            minimum=0.0,
+            maximum=30.0,
+        )
+        self._prefetch_top_k = self._coerce_int(
+            self._config.get("prefetch_top_k", 5),
+            5,
+            minimum=1,
+            maximum=50,
+        )
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -234,33 +304,104 @@ class Mem0MemoryProvider(MemoryProvider):
             "mem0_profile for a full overview."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    @staticmethod
+    def _format_prefetch_results(results: list) -> str:
+        lines = [
+            r.get("memory", "")
+            for r in results
+            if isinstance(r, dict) and r.get("memory")
+        ]
+        return "\n".join(f"- {line}" for line in lines)
+
+    def _search_prefetch(self, query: str) -> str:
+        client = self._get_client()
+        results = self._unwrap_results(client.search(
+            query=query,
+            filters=self._read_filters(),
+            rerank=self._rerank,
+            top_k=self._prefetch_top_k,
+        ))
+        return self._format_prefetch_results(results)
+
+    def _search_prefetch_with_timeout(self, query: str) -> str:
+        if not query or self._is_breaker_open():
+            return ""
+        if self._prefetch_timeout <= 0:
+            try:
+                result = self._search_prefetch(query)
+                self._record_success()
+                return result
+            except Exception as e:
+                self._record_failure()
+                logger.debug("Mem0 current prefetch failed: %s", e)
+                return ""
+
+        state: Dict[str, Any] = {}
+
+        def _run():
+            try:
+                state["result"] = self._search_prefetch(query)
+            except Exception as e:
+                state["error"] = e
+
+        thread = threading.Thread(target=_run, daemon=True, name="mem0-current-prefetch")
+        thread.start()
+        thread.join(timeout=self._prefetch_timeout)
+        if thread.is_alive():
+            self._record_failure()
+            logger.debug("Mem0 current prefetch timed out after %.2fs", self._prefetch_timeout)
+            return ""
+        if state.get("error"):
+            self._record_failure()
+            logger.debug("Mem0 current prefetch failed: %s", state["error"])
+            return ""
+        self._record_success()
+        return str(state.get("result") or "")
+
+    def _consume_warmed_prefetch(self, query: str, *, allow_stale: bool = False) -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=min(self._prefetch_timeout, 3.0))
         with self._prefetch_lock:
             result = self._prefetch_result
+            cached_query = self._prefetch_query
             self._prefetch_result = ""
+            self._prefetch_query = ""
+        if not result:
+            return ""
+        if allow_stale or not cached_query or cached_query == query:
+            return result
+        logger.debug(
+            "Discarding stale Mem0 warmed prefetch for query %r while handling %r",
+            cached_query,
+            query,
+        )
+        return ""
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        query = query if isinstance(query, str) else ""
+        result = ""
+        if self._prefetch_mode in {"current", "hybrid"}:
+            result = self._search_prefetch_with_timeout(query)
+        if not result and self._prefetch_mode in {"warmed", "hybrid"}:
+            result = self._consume_warmed_prefetch(
+                query,
+                allow_stale=self._prefetch_mode == "warmed",
+            )
         if not result:
             return ""
         return f"## Mem0 Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if self._is_breaker_open():
+        if self._prefetch_mode == "current" or self._is_breaker_open():
             return
+        query = query if isinstance(query, str) else ""
 
         def _run():
             try:
-                client = self._get_client()
-                results = self._unwrap_results(client.search(
-                    query=query,
-                    filters=self._read_filters(),
-                    rerank=self._rerank,
-                    top_k=5,
-                ))
-                if results:
-                    lines = [r.get("memory", "") for r in results if r.get("memory")]
-                    with self._prefetch_lock:
-                        self._prefetch_result = "\n".join(f"- {l}" for l in lines)
+                result = self._search_prefetch(query)
+                with self._prefetch_lock:
+                    self._prefetch_result = result
+                    self._prefetch_query = query
                 self._record_success()
             except Exception as e:
                 self._record_failure()

@@ -28,6 +28,14 @@ Config file: `$HERMES_HOME/mem0.json`
 | `user_id` | `hermes-user` | User identifier on Mem0 |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `true` | Enable reranking for recall |
+| `prefetch_mode` | `hybrid` | Automatic recall mode: `current`, `warmed`, or `hybrid` |
+| `prefetch_timeout` | `2.5` | Max seconds to wait for current-turn recall |
+| `prefetch_top_k` | `5` | Max memories injected automatically |
+
+**prefetch_mode:**
+- `hybrid` — search Mem0 for the current user prompt; fall back to a same-query warmed result if the live search times out
+- `current` — search Mem0 only while building the current prompt
+- `warmed` — use the legacy background warmed result only
 
 ## Tools
 
