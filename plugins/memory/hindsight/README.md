@@ -22,6 +22,16 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
+To run Hindsight alongside another memory provider such as Mem0, keep the
+legacy primary provider and add the ordered provider list:
+```yaml
+memory:
+  provider: mem0
+  providers:
+    - mem0
+    - hindsight
+```
+
 ### Cloud
 
 Connects to the Hindsight Cloud API. Requires an API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io).
@@ -98,6 +108,29 @@ Config file: `~/.hermes/hindsight/config.json`
 | `retain_source` | — | Optional `metadata.source` attached to retained memories |
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
+
+For a searchable hindsight database without automatic raw transcript retention,
+disable `auto_retain` and enable compact summary retention:
+
+```json
+{
+  "memory_mode": "tools",
+  "auto_recall": false,
+  "auto_retain": false,
+  "summary_retain_enabled": true,
+  "summary_every_n_turns": 12,
+  "summary_max_chars": 12000,
+  "summary_tags": ["mara", "hindsight-summary"]
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `summary_retain_enabled` | `false` | Retain compact sanitized episode digests separately from raw turn retention |
+| `summary_every_n_turns` | `12` | Retain a digest every N completed user turns |
+| `summary_max_chars` | `12000` | Maximum characters per digest |
+| `summary_context` | `compact Hermes session hindsight digest` | Context label for retained digests |
+| `summary_tags` | `hindsight-summary` | Tags applied to retained digests |
 
 ### Integration
 
