@@ -76,9 +76,15 @@ def _notify_provider_jobs_changed_safe() -> None:
 # header exemption.
 
 # Strict patterns — applied to the user prompt only.
+_CRON_DECEPTION_HIDE_PATTERN = (
+    r"(?:do\s+not|don't)\s+(?:\w+\s+){0,3}tell\s+(?:\w+\s+){0,3}the\s+user"
+    r"(?:\s*(?:$|[.!?;:,])|\s+(?:about|that|what|why|how|anything|this|it|secret|hidden|"
+    r"the\s+(?:real|actual|true|secret|hidden)|any\s+(?:details|of\s+this))\b)"
+)
+
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (_CRON_DECEPTION_HIDE_PATTERN, "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
@@ -96,7 +102,7 @@ _CRON_THREAT_PATTERNS = [
 # through install.
 _CRON_SKILL_ASSEMBLED_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
+    (_CRON_DECEPTION_HIDE_PATTERN, "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
 ]
