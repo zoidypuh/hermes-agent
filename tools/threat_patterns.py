@@ -58,6 +58,17 @@ MAX_SCAN_CHARS = 65_536
 # bypasses without introducing unbounded repetition.
 _FILLER = r"(?:\w+\s+){0,8}"
 
+# "Do not tell the user" is also common in legitimate verification gates
+# (for example, do not claim a queued task succeeded before checking it).
+# Require either sentence termination or a deception-oriented continuation so
+# the guard still catches concealment instructions without flagging those
+# operational contracts.
+_DECEPTION_HIDE_PATTERN = (
+    r"(?:do\s+not|don't)\s+(?:\w+\s+){0,3}tell\s+(?:\w+\s+){0,3}the\s+user"
+    r"(?:\s*(?:$|[.!?;:,])|\s+(?:about|that|what|why|how|anything|this|it|secret|hidden|"
+    r"the\s+(?:real|actual|true|secret|hidden)|any\s+(?:details|of\s+this))\b)"
+)
+
 # Each entry: (regex, pattern_id, scope)
 # scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
@@ -69,7 +80,7 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][^>]{0,2048}display\s*:\s*none', "hidden_div", "all"),
     (r'translate\s+[^\n]{0,512}\s+into\s+[^\n]{0,512}\s+and\s+(execute|run|eval)', "translate_execute", "all"),
-    (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),
+    (_DECEPTION_HIDE_PATTERN, "deception_hide", "all"),
 
     # ── Role-play / identity hijack (context + strict; common attack
     #    surface in scraped web content and poisoned context files) ──

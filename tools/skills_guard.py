@@ -98,6 +98,12 @@ class ScanResult:
 # Threat patterns — (regex, pattern_id, severity, category, description)
 # ---------------------------------------------------------------------------
 
+_DECEPTION_HIDE_PATTERN = (
+    r"(?:do\s+not|don't)\s+(?:\w+\s+){0,3}tell\s+(?:\w+\s+){0,3}the\s+user"
+    r"(?:\s*(?:$|[.!?;:,])|\s+(?:about|that|what|why|how|anything|this|it|secret|hidden|"
+    r"the\s+(?:real|actual|true|secret|hidden)|any\s+(?:details|of\s+this))\b)"
+)
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
@@ -196,7 +202,7 @@ THREAT_PATTERNS = [
     (r'you\s+are\s+(?:\w+\s+)*now\s+',
      "role_hijack", "high", "injection",
      "attempts to override the agent's role"),
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user',
+    (_DECEPTION_HIDE_PATTERN,
      "deception_hide", "critical", "injection",
      "instructs agent to hide information from user"),
     (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
