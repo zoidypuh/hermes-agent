@@ -269,7 +269,11 @@ class TestSchemas:
 
     def test_recall_schema_has_query(self):
         assert RECALL_SCHEMA["name"] == "hindsight_recall"
-        assert "query" in RECALL_SCHEMA["parameters"]["properties"]
+        properties = RECALL_SCHEMA["parameters"]["properties"]
+        assert "query" in properties
+        assert "bank_id" in properties
+        assert "tags" in properties
+        assert "types" in properties
         assert "query" in RECALL_SCHEMA["parameters"]["required"]
 
     def test_reflect_schema_has_query(self):
@@ -710,6 +714,33 @@ class TestToolHandlers:
         assert call_kwargs["tags"] == ["tag1"]
         assert call_kwargs["tags_match"] == "all"
 
+    def test_recall_allows_per_call_bank_and_tag_override(self, provider_with_config):
+        p = provider_with_config(recall_tags=["daily"], recall_tags_match="all_strict")
+        p.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "bug bounty",
+                "bank_id": "brain-bounty",
+                "tags": ["scope:brain-bounty", "inject:active"],
+                "tags_match": "all_strict",
+                "types": ["observation", "world", "experience"],
+                "max_tokens": 1234,
+            },
+        )
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["bank_id"] == "brain-bounty"
+        assert call_kwargs["tags"] == ["scope:brain-bounty", "inject:active"]
+        assert call_kwargs["tags_match"] == "all_strict"
+        assert call_kwargs["types"] == ["observation", "world", "experience"]
+        assert call_kwargs["max_tokens"] == 1234
+
+    def test_recall_empty_per_call_tags_clear_configured_tags(self, provider_with_config):
+        p = provider_with_config(recall_tags=["daily"], recall_tags_match="all_strict")
+        p.handle_tool_call("hindsight_recall", {"query": "test", "tags": []})
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert "tags" not in call_kwargs
+        assert "tags_match" not in call_kwargs
+
     def test_recall_passes_types(self, provider_with_config):
         p = provider_with_config(recall_types=["world", "experience"])
         p.handle_tool_call("hindsight_recall", {"query": "test"})
@@ -1124,6 +1155,118 @@ class TestSyncTurn:
         assert "👨‍👩‍👧‍👦" in raw_json
 
 
+class TestSummaryRetain:
+    def test_summary_retain_cadence_without_raw_auto_retain(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain="false",
+            summary_retain_enabled=True,
+            summary_every_n_turns=2,
+            summary_tags=["mara", "hindsight-summary"],
+            retain_async=False,
+        )
+
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._client.aretain_batch.assert_not_called()
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["bank_id"] == "test-bank"
+        assert kw["document_id"].startswith("test-session-hindsight-summary-1-2-")
+        assert kw["retain_async"] is False
+        item = kw["items"][0]
+        assert item["context"] == "compact Hermes session hindsight digest"
+        assert not item["content"].lstrip().startswith("[")
+        assert "turn1-user" in item["content"]
+        assert "turn2-asst" in item["content"]
+        assert item["metadata"]["source"] == "hindsight_summary"
+        assert item["metadata"]["session_id"] == "test-session"
+        assert item["metadata"]["turn_start"] == "1"
+        assert item["metadata"]["turn_end"] == "2"
+        assert item["metadata"]["message_count"] == "4"
+        assert "created_at" in item["metadata"]
+        assert item["tags"] == ["session:test-session", "mara", "hindsight-summary"]
+        assert p._session_turns == []
+
+    def test_summary_retain_strips_memory_context_and_redacts_secrets(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain=False,
+            summary_retain_enabled=True,
+            summary_every_n_turns=1,
+        )
+
+        p.sync_turn(
+            "<memory-context>\napi_key=abc123\nhidden memory\n</memory-context>\nreal request sk-testsecret123456",
+            "handled it",
+        )
+        p._retain_queue.join()
+
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        content = item["content"]
+        assert "<memory-context>" not in content
+        assert "hidden memory" not in content
+        assert "api_key=abc123" not in content
+        assert "sk-testsecret123456" not in content
+        assert "real request" in content
+
+    def test_summary_retain_flushes_on_pre_compress_without_prompt_injection(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain=False,
+            summary_retain_enabled=True,
+            summary_every_n_turns=12,
+        )
+        p.sync_turn("pending-user", "pending-asst")
+        assert p.on_pre_compress([]) == ""
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        item = p._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["metadata"]["summary_reason"] == "pre_compress"
+        assert "pending-user" in item["content"]
+
+    def test_summary_retain_flushes_on_session_switch(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain=False,
+            summary_retain_enabled=True,
+            summary_every_n_turns=12,
+        )
+        p.sync_turn("old-user", "old-asst")
+        p._client.aretain_batch.assert_not_called()
+
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        item = kw["items"][0]
+        assert kw["document_id"].startswith("test-session-hindsight-summary-1-1-")
+        assert item["metadata"]["summary_reason"] == "session_switch"
+        assert item["metadata"]["session_id"] == "test-session"
+        assert item["metadata"]["turn_start"] == "1"
+        assert item["metadata"]["turn_end"] == "1"
+        assert "old-user" in item["content"]
+        assert p._session_id == "new-sid"
+        assert p._summary_turns == []
+        assert p._summary_flushed_turn_index == 0
+
+    def test_summary_retain_flushes_on_shutdown(self, provider_with_config):
+        p = provider_with_config(
+            auto_retain=False,
+            summary_retain_enabled=True,
+            summary_every_n_turns=12,
+        )
+        client = p._client
+        p.sync_turn("final-user", "final-asst")
+
+        p.shutdown()
+
+        client.aretain_batch.assert_called_once()
+        item = client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["metadata"]["summary_reason"] == "shutdown"
+        assert "final-user" in item["content"]
+
+
 # ---------------------------------------------------------------------------
 # Shutdown / writer tests
 # ---------------------------------------------------------------------------
@@ -1480,6 +1623,8 @@ class TestConfigSchema:
             "recall_tags", "recall_tags_match",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
+            "summary_retain_enabled", "summary_every_n_turns",
+            "summary_max_chars", "summary_context", "summary_tags",
             "recall_max_tokens", "recall_max_input_chars",
             "recall_prompt_preamble",
         }
