@@ -166,17 +166,41 @@ _INTERNAL_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _INTERNAL_NOTE_RE = re.compile(
-    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.[^\]]*\]\s*',
     re.IGNORECASE,
 )
+_MEMORY_CONTEXT_LABEL_RE = re.compile(
+    r'\[Memory context:\s*not written by the user;\s*may be stale\.\]\s*',
+    re.IGNORECASE,
+)
+_MEMORY_HEADING_RE = re.compile(r'^\s{0,3}#{1,6}\s+.*memory.*$', re.IGNORECASE)
+_MAX_MEMORY_CONTEXT_LINES = 12
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence tags, injected context blocks, and system notes from provider output."""
     text = _INTERNAL_CONTEXT_RE.sub('', text)
     text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _MEMORY_CONTEXT_LABEL_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def _compact_memory_context(
+    text: str,
+    *,
+    max_lines: int = _MAX_MEMORY_CONTEXT_LINES,
+) -> str:
+    """Return a bounded set of meaningful memory lines without headings."""
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or _MEMORY_HEADING_RE.match(line):
+            continue
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return "\n".join(lines)
 
 
 class StreamingContextScrubber:
@@ -351,12 +375,11 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    body = _compact_memory_context(clean)
     return (
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        "[Memory context: not written by the user; may be stale.]\n"
+        f"{body}\n"
         "</memory-context>"
     )
 
