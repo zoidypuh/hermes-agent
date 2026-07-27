@@ -7,7 +7,12 @@ upstream prefix cache warm.  See ``hermes-agent-dev``'s
 ``references/self-improvement-loop.md`` for how the background-review
 fork inherits the cached prompt verbatim.
 
-Three tiers are joined with ``\\n\\n``:
+In composite mode, the stable prompt is profile ``soul.md`` followed by the
+shared root ``frontlobe.md``, ``memory.md``, and ``projects.md``. Generated
+Hermes prompt layers are skipped. Caller ``system_message`` remains in the
+context tier, and ephemeral call-time text remains separate.
+
+The legacy three tiers are joined with ``\\n\\n``:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
@@ -179,6 +184,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         _cc_len = getattr(_cc, "context_length", None)
         if isinstance(_cc_len, int) and _cc_len > 0:
             _ctx_len = _cc_len
+
+    # Strict composite prompt mode. The loader either returns all four required
+    # fragments or raises one aggregated error; it never partially falls back
+    # to Hermes' generated identity, guidance, context, or volatile layers.
+    _profile_system_content = _r.load_profile_system_md(_ctx_len)
+    if _profile_system_content:
+        return {
+            "stable": _profile_system_content,
+            "context": (system_message or "").strip(),
+            "volatile": "",
+        }
+
+    # The generated prompt stack below is intentionally unreachable while
+    # strict composite mode is active. It remains as an explicit test/rollback
+    # seam: the production loader never returns an empty string.
 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []

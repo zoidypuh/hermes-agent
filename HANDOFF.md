@@ -198,7 +198,7 @@ Every one of the 68 commits is accounted for in the following table:
 | `ddb3d56e9` | Already upstreamed/coherent feature | Current-turn Mem0 recall is covered upstream by `c6eb7f9e7284c5268ceed0c3fc92e1f2a5d892c7`; additional safe controls live on the isolated Mem0 branch. |
 | `21cbae39c` | Mixed/coherent feature | Mixed gateway/Hindsight runtime patch. Hindsight summary behavior was isolated cleanly in `c802ed120`; unrelated legacy pieces were dropped. |
 | `de5641f85` | Superseded | Context-engine reconciliation targets an older integration. Current upstream owns provider lifecycle and `on_pre_compress` behavior (`924bc67eee35cc2fbb24d7cbc5649c820beb4406`). |
-| `13816bd17`, `e90c46e2a` | Duplicate/incoherent | SYSTEM.md/composite prompt variants can return early and drop tool, skill, platform, and context layers. Current `agent.system_prompt`/ephemeral overlays cover the coherent intent. Archived. |
+| `13816bd17`, `e90c46e2a` | Superseded by deliberate fork policy | The broad historical SYSTEM.md variants were archived. `feature/shared-composite-system-prompt` reimplements the narrow intended contract: profile `soul.md`, then shared root `frontlobe.md`, `memory.md`, and `projects.md`; caller and ephemeral overlays remain additive. This fork policy must be carried across upstream rebases. |
 | `663bc0a1f` | Already upstreamed | Profile no-bundled-skills opt-out is covered upstream by `2ed96372ade3e2f6797b68fb88bf0a53f52f2ee8`. |
 | `999b770d5` | Incoherent policy/config | Autosuggest disablement uses new non-secret `HERMES_*` environment configuration, contrary to repository config policy. Archived, not ported. |
 | `24b13f2b9` | Incoherent | Deletes project `AGENTS.md`; explicitly rejected. Preserved only by archive/bundle. |

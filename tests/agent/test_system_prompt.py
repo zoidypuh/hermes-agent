@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -27,6 +29,12 @@ def _make_agent(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture(autouse=True)
+def _legacy_prompt_stack(monkeypatch):
+    """Legacy-layer tests opt out of this fork's strict composite mode."""
+    monkeypatch.setattr("run_agent.load_profile_system_md", lambda *_args: "")
 
 
 def _captured_context_cwd(agent):
@@ -114,6 +122,45 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestProfileCompositePromptMode:
+    def test_short_circuits_generated_layers_but_keeps_caller_system_message(self):
+        agent = _make_agent(
+            valid_tool_names=["skills_list"],
+            model="gpt-test",
+            provider="test-provider",
+            session_id="sess",
+            pass_session_id=True,
+        )
+
+        with (
+            patch(
+                "run_agent.load_profile_system_md",
+                return_value="soul\n\nfront\n\nmem\n\nprojects",
+            ),
+            patch("run_agent.load_soul_md", return_value="legacy soul"),
+            patch("run_agent.build_skills_system_prompt", return_value="skills prompt"),
+            patch("run_agent.build_environment_hints", return_value="env block"),
+            patch("run_agent.build_context_files_prompt", return_value="project context"),
+        ):
+            parts = build_system_prompt_parts(agent, system_message="caller system")
+
+        assert parts == {
+            "stable": "soul\n\nfront\n\nmem\n\nprojects",
+            "context": "caller system",
+            "volatile": "",
+        }
+
+    def test_ephemeral_prompt_stays_out_of_cached_composite(self):
+        agent = _make_agent(ephemeral_system_prompt="call-time only")
+
+        with patch("run_agent.load_profile_system_md", return_value="composite"):
+            prompt = build_system_prompt(agent)
+
+        assert prompt == "composite"
+        assert agent._cached_system_prompt_static == "composite"
+        assert "call-time only" not in prompt
 
 
 def test_build_system_prompt_records_stable_prefix():

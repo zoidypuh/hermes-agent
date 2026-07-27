@@ -49,6 +49,12 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _legacy_prompt_stack(monkeypatch):
+    """Most AIAgent tests exercise the upstream generated prompt stack."""
+    monkeypatch.setattr(run_agent, "load_profile_system_md", lambda *_args: "")
+
+
 def test_is_destructive_command_treats_cp_as_mutating():
     assert run_agent._is_destructive_command("cp .env.local .env") is True
 

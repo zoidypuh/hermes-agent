@@ -13,7 +13,12 @@ import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
+from hermes_constants import (
+    get_default_hermes_root,
+    get_hermes_home,
+    get_skills_dir,
+    is_wsl,
+)
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1914,6 +1919,88 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
+
+_SHARED_SYSTEM_FRAGMENT_NAMES = ("frontlobe.md", "memory.md", "projects.md")
+
+
+def _profile_soul_path(profile_home: Path) -> tuple[Path, Optional[Path]]:
+    """Resolve the profile-owned soul file.
+
+    Canonical lowercase ``soul.md`` always wins, including when it is empty or
+    unreadable. Uppercase ``SOUL.md`` is a legacy fallback only when lowercase
+    is absent; this prevents a broken canonical file from being silently
+    shadowed by stale legacy content.
+    """
+    canonical = profile_home / "soul.md"
+    legacy = profile_home / "SOUL.md"
+    if canonical.exists():
+        return canonical, None
+    return legacy, canonical
+
+
+def load_profile_system_md(context_length: Optional[int] = None) -> str:
+    """Load the strict composite system prompt for the active profile.
+
+    The byte order is profile ``soul.md`` followed by shared root
+    ``frontlobe.md``, ``memory.md``, and ``projects.md``. Only the soul is
+    profile-specific. Shared fragments use exact lowercase names in the
+    default Hermes root and never fall back to files inside the profile.
+
+    All four inputs are required and non-empty. Every missing, empty, or
+    unreadable input is reported together so a bad prompt cannot start
+    partially or fall back to Hermes' generated prompt layers.
+    """
+    profile_home = get_hermes_home()
+    hermes_root = get_default_hermes_root()
+    soul_path, missing_canonical_soul = _profile_soul_path(profile_home)
+    fragment_paths = [
+        soul_path,
+        *(hermes_root / name for name in _SHARED_SYSTEM_FRAGMENT_NAMES),
+    ]
+
+    issues: list[str] = []
+    fragments: list[str] = []
+
+    for index, fragment_path in enumerate(fragment_paths):
+        if not fragment_path.is_file():
+            if index == 0 and missing_canonical_soul is not None:
+                issues.append(
+                    f"missing: {missing_canonical_soul} "
+                    f"(legacy fallback also missing: {fragment_path})"
+                )
+            else:
+                issues.append(f"missing: {fragment_path}")
+            continue
+
+        try:
+            content = fragment_path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            issues.append(f"unreadable: {fragment_path} ({exc})")
+            continue
+
+        if not content:
+            issues.append(f"empty: {fragment_path}")
+            continue
+
+        label = "soul.md" if index == 0 else _SHARED_SYSTEM_FRAGMENT_NAMES[index - 1]
+        content = _scan_context_content(content, label)
+        fragments.append(
+            _truncate_content(
+                content,
+                label,
+                context_length=context_length,
+                read_path=str(fragment_path),
+            )
+        )
+
+    if issues:
+        raise RuntimeError(
+            "Composite system prompt requires four readable, non-empty files:\n- "
+            + "\n- ".join(issues)
+        )
+
+    return "\n\n".join(fragments)
 
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
