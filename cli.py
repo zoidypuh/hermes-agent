@@ -3530,10 +3530,13 @@ def _hermes_call_output_screen_diff(
     1. Inflate ``previous_screen.height`` when the new screen is taller so pt
        skips the reserve-vertical-space cursor move that stamps chrome into
        scrollback (pt #29 / Hermes #26137).
-    2. On AttributeError/TypeError from a corrupt previous paint buffer
-       (classic after tmux attach with same width), retry once with
-       ``previous_screen=None`` so pt first-paints cleanly instead of crashing
-       the event loop with ``'cell' object has no attribute 'char'``.
+    2. On AttributeError/TypeError/RuntimeError/ValueError from a corrupt
+       previous paint buffer (classic after tmux attach with same width, or
+       mid-redraw races under WSL+tmux with large image transcripts), retry
+       once with ``previous_screen=None`` so pt first-paints cleanly instead
+       of crashing the event loop (e.g. ``'cell' object has no attribute
+       'char'``). Broader than AttributeError alone because WSL/tmux dumps
+       also surface RuntimeError/ValueError from inconsistent row caches.
     """
     try:
         if previous_screen is not None and hasattr(previous_screen, "height"):
@@ -3549,8 +3552,9 @@ def _hermes_call_output_screen_diff(
             attrs_for_style_string, style_string_has_style,
             size, previous_width,
         )
-    except (AttributeError, TypeError):
-        # Corrupt previous_screen / row cells after client reattach.
+    except (AttributeError, TypeError, RuntimeError, ValueError):
+        # Corrupt previous_screen / row cells after client reattach or a
+        # concurrent invalidate race (WSL+tmux + image-heavy transcripts).
         return orig_osd(
             app, output, screen, current_pos, color_depth,
             None,  # previous_screen → first-paint erase path
@@ -3559,6 +3563,133 @@ def _hermes_call_output_screen_diff(
             attrs_for_style_string, style_string_has_style,
             size, 0,  # previous_width → treat as changed
         )
+
+
+def _running_under_wsl_or_tmux() -> bool:
+    """True when classic CLI runs under WSL and/or tmux (redraw-fragile)."""
+    if os.environ.get("TMUX") or os.environ.get("TMUX_PANE"):
+        return True
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        with open("/proc/version", "r", encoding="utf-8", errors="ignore") as fh:
+            if "microsoft" in fh.read().lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _apply_wsl_tmux_ptk_env_hardening() -> None:
+    """Best-effort env defaults that reduce prompt_toolkit redraw stress.
+
+    Observed production crash (WSL + tmux + long streaming session + image
+    attachment): native segfault inside prompt_toolkit ``split_lines`` /
+    ``_redraw``. CPR queries and aggressive idle refresh amplify redraws.
+    These defaults are opt-out via already-set env vars.
+    """
+    if not _running_under_wsl_or_tmux():
+        return
+    os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
+    os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+    term = (os.environ.get("TERM") or "").strip()
+    if term in ("", "dumb", "unknown"):
+        os.environ["TERM"] = "xterm-256color"
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+def _safe_pt_fragments(frags):
+    """Normalize FormattedText to plain (style, text) str pairs.
+
+    prompt_toolkit's ``split_lines`` / renderer assume style+text are strings.
+    Background threads and pet/status generators can briefly hand back None,
+    bytes, or non-tuple rows during races — which has crashed classic CLI
+    redraw under WSL/tmux (Fatal Python error: Segmentation fault in
+    ``formatted_text/utils.py:split_lines``). Fail soft to empty / cleaned.
+    """
+    if not frags:
+        return []
+    out = []
+    try:
+        for item in frags:
+            if not item:
+                continue
+            if isinstance(item, str):
+                if item:
+                    out.append(("", item))
+                continue
+            try:
+                style, text = item[0], item[1]
+            except (TypeError, ValueError, IndexError):
+                continue
+            if style is None:
+                style = ""
+            elif not isinstance(style, str):
+                style = str(style)
+            if text is None:
+                continue
+            if not isinstance(text, str):
+                if isinstance(text, (bytes, bytearray)):
+                    text = text.decode("utf-8", errors="replace")
+                else:
+                    text = str(text)
+            # Cap pathological single fragments that can blow the layout engine
+            # during image-badge + long-stream sessions.
+            if len(text) > 8192:
+                text = text[:8192]
+            out.append((style, text))
+    except Exception:
+        return []
+    return out
+
+
+def _install_safe_application_redraw(app) -> None:
+    """Wrap ``Application._redraw`` so Python paint failures recover once.
+
+    Does not catch true native segfaults, but converts the common Python-side
+    paint failures (corrupt previous_screen, bad fragments) into a one-shot
+    first-paint retry instead of killing the CLI process.
+    """
+    if app is None or getattr(app, "_hermes_safe_redraw_installed", False):
+        return
+    orig = app._redraw
+
+    def _safe_redraw(*args, **kwargs):
+        try:
+            return orig(*args, **kwargs)
+        except (AttributeError, TypeError, RuntimeError, ValueError, IndexError) as exc:
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "prompt_toolkit redraw failed (%s); retrying first-paint recovery",
+                type(exc).__name__,
+                exc_info=True,
+            )
+            try:
+                renderer = getattr(app, "renderer", None)
+                if renderer is not None:
+                    # Force first-paint path on next attempt.
+                    for attr in ("_previous_screen", "previous_screen", "_last_size"):
+                        if hasattr(renderer, attr):
+                            try:
+                                setattr(renderer, attr, None)
+                            except Exception:
+                                pass
+                    reset = getattr(renderer, "reset", None)
+                    if callable(reset):
+                        try:
+                            reset()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                return orig(*args, **kwargs)
+            except Exception:
+                logger.exception("prompt_toolkit redraw recovery also failed; skipping frame")
+                return None
+
+    app._redraw = _safe_redraw  # type: ignore[method-assign]
+    app._hermes_safe_redraw_installed = True
 
 
 def _apply_bracketed_paste_timeout_patch() -> None:
@@ -4887,6 +5018,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         if getattr(self, "_resize_recovery_pending", False):
             return
+        # WSL+tmux classic CLI has crashed (native segfault) under high redraw
+        # load with image-bearing transcripts. Floor the throttle so spinner /
+        # stream flushes cannot invalidate harder than ~3–4 Hz in that env.
+        if _running_under_wsl_or_tmux():
+            min_interval = max(float(min_interval or 0.0), 0.35)
         now = time.monotonic()
         if hasattr(self, "_app") and self._app and (now - getattr(self, "_last_invalidate", 0.0)) >= min_interval:
             self._last_invalidate = now
@@ -5840,7 +5976,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             grids = self._pet_frames_for(state)
             if not grids:
                 return []
-            grid = grids[self._pet_frame_idx % len(grids)]
+            # Snapshot the frame under the lock so the anim thread cannot
+            # mutate grids while we walk cells (WSL/tmux redraw races).
+            grid = [list(row) for row in grids[self._pet_frame_idx % len(grids)]]
 
         frags = []
         for y, row in enumerate(grid):
@@ -5861,7 +5999,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     frags.append((f"fg:#{tr:02x}{tg:02x}{tb:02x}", "▀"))
                 else:
                     frags.append((f"fg:#{br:02x}{bg:02x}{bb:02x}", "▄"))
-        return frags
+        return _safe_pt_fragments(frags)
 
     def _pet_widget_height(self) -> int:
         """Visible rows for the pet window — 0 collapses it when no pet shows."""
@@ -15087,6 +15225,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        _apply_wsl_tmux_ptk_env_hardening()
         if not self._claim_active_session("cli"):
             return
 
@@ -16734,13 +16873,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             spinner_line = cli_ref._render_spinner_text()
             if not spinner_line:
                 return []
-            return [('class:hint', spinner_line)]
+            return _safe_pt_fragments([('class:hint', spinner_line)])
 
         def get_spinner_height():
             return cli_ref._spinner_widget_height()
 
         spinner_widget = Window(
-            content=FormattedTextControl(get_spinner_text),
+            content=FormattedTextControl(lambda: _safe_pt_fragments(get_spinner_text())),
             height=get_spinner_height,
             wrap_lines=True,
         )
@@ -16750,13 +16889,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # enabled, so it's a no-op for everyone else. The _pet_anim_loop thread
         # advances frames + invalidates; align=RIGHT pins it to the edge.
         self._pet_widget = Window(
-            content=FormattedTextControl(self._pet_fragments),
+            content=FormattedTextControl(lambda: _safe_pt_fragments(self._pet_fragments())),
             height=self._pet_widget_height,
             align=WindowAlign.RIGHT,
         )
 
         spacer = Window(
-            content=FormattedTextControl(get_hint_text),
+            content=FormattedTextControl(lambda: _safe_pt_fragments(get_hint_text())),
             height=get_hint_height,
         )
 
@@ -17202,7 +17341,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return [("class:image-badge", f" {badges} ")]
 
         image_bar = Window(
-            content=FormattedTextControl(_get_image_bar),
+            content=FormattedTextControl(lambda: _safe_pt_fragments(_get_image_bar())),
             height=Condition(lambda: bool(cli_ref._attached_images)),
         )
 
@@ -17220,7 +17359,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         status_bar = ConditionalContainer(
             Window(
-                content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
+                content=FormattedTextControl(lambda: _safe_pt_fragments(cli_ref._get_status_bar_fragments())),
                 height=1,
                 # Prevent fragments that overflow the terminal width from
                 # wrapping onto a second line, which causes the status bar to
@@ -17385,6 +17524,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         _disable_prompt_toolkit_cpr_warning(app)
+        _install_safe_application_redraw(app)
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
