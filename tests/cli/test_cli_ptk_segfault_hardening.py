@@ -199,3 +199,62 @@ class TestInvalidateFloor:
         monkeypatch.setattr(cli_mod.time, "monotonic", lambda: 100.2)
         cli._invalidate(min_interval=0.05)
         assert app.invalidate.call_count == 1
+
+
+class TestSafeAutoFlushSleep:
+    """Guards for the 2026-08-13 dump: auto_flush_input → sleep → Handle.cancel."""
+
+    def test_safe_sleep_zero_and_short_delay_return_result(self):
+        import asyncio
+
+        async def main():
+            zero = await cli_mod._hermes_safe_sleep(0, result="zero")
+            short = await cli_mod._hermes_safe_sleep(0.01, result="short")
+            return zero, short
+
+        assert asyncio.run(main()) == ("zero", "short")
+
+    def test_cancelled_safe_sleep_does_not_call_timer_handle_cancel(self):
+        import asyncio
+
+        handles = []
+
+        async def main():
+            loop = asyncio.get_running_loop()
+            real_call_later = loop.call_later
+
+            def wrapping_call_later(delay, callback, *args):
+                handle = real_call_later(delay, callback, *args)
+                handles.append(handle)
+                return handle
+
+            loop.call_later = wrapping_call_later
+            task = asyncio.create_task(cli_mod._hermes_safe_sleep(30.0))
+            await asyncio.sleep(0)
+            assert handles, "safe sleep must schedule a real loop timer"
+            assert not task.done()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # CPython TimerHandle.cancel is the dumped SIGSEGV site.
+            # The sleeper must leave that handle uncancelled.
+            assert handles[0].cancelled() is False
+
+        asyncio.run(main())
+
+    def test_install_rewires_ptk_sleep_to_shipped_guard(self):
+        import prompt_toolkit.application.application as ptk_app_mod
+
+        cli_mod._install_safe_asyncio_sleep_cancel()
+        cli_mod._install_safe_asyncio_sleep_cancel()
+        assert ptk_app_mod.sleep is cli_mod._hermes_safe_sleep
+        assert ptk_app_mod._hermes_safe_sleep_installed is True
+
+    def test_installer_is_on_classic_application_setup_path(self):
+        from pathlib import Path
+
+        text = Path(cli_mod.__file__).read_text(encoding="utf-8")
+        assert "_install_safe_asyncio_sleep_cancel()" in text
+        redraw_at = text.index("_install_safe_application_redraw(app)")
+        sleep_at = text.index("_install_safe_asyncio_sleep_cancel()")
+        assert redraw_at < sleep_at

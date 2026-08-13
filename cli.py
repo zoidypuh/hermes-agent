@@ -3692,6 +3692,52 @@ def _install_safe_application_redraw(app) -> None:
     app._hermes_safe_redraw_installed = True
 
 
+async def _hermes_safe_sleep(delay, result=None):
+    """asyncio.sleep stand-in that never cancels its TimerHandle.
+
+    CPython 3.11 ``asyncio.sleep`` does ``finally: h.cancel()`` on the
+    ``call_later`` timer. prompt_toolkit ``auto_flush_input`` awaits that
+    sleep and is cancelled on every keystroke; production dump 2026-08-13
+    native-SIGSEGV'd in ``TimerHandle.cancel`` (events.py:152) on that
+    path. Leaving the timer to fire as a no-op avoids the crash site.
+    """
+    import asyncio
+
+    try:
+        seconds = float(delay)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if seconds <= 0:
+        # Match stdlib: yield once, no TimerHandle.
+        await asyncio.sleep(0)
+        return result
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def _awake() -> None:
+        if not future.done():
+            future.set_result(result)
+
+    loop.call_later(seconds, _awake)
+    return await future
+
+
+def _install_safe_asyncio_sleep_cancel() -> None:
+    """Point prompt_toolkit's bound ``sleep`` at ``_hermes_safe_sleep``.
+
+    Application.py does ``from asyncio import sleep``, so patching
+    ``asyncio.sleep`` alone never reaches ``auto_flush_input``. Idempotent.
+    """
+    try:
+        import prompt_toolkit.application.application as ptk_app_mod
+    except Exception:
+        return
+    if getattr(ptk_app_mod, "_hermes_safe_sleep_installed", False):
+        return
+    ptk_app_mod.sleep = _hermes_safe_sleep
+    ptk_app_mod._hermes_safe_sleep_installed = True
+
+
 def _apply_bracketed_paste_timeout_patch() -> None:
     """Patch prompt_toolkit to recover from torn bracketed-paste sequences.
 
@@ -17525,6 +17571,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
         _disable_prompt_toolkit_cpr_warning(app)
         _install_safe_application_redraw(app)
+        _install_safe_asyncio_sleep_cancel()
         self._app = app  # Store reference for clarify_callback
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
