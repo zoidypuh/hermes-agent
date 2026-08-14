@@ -3738,6 +3738,62 @@ def _install_safe_asyncio_sleep_cancel() -> None:
     ptk_app_mod._hermes_safe_sleep_installed = True
 
 
+
+def _install_threadsafe_invalidate(app) -> None:
+    """Replace app.invalidate() with a thread-safe version.
+
+    prompt_toolkit Application.invalidate() is NOT thread-safe. Calling
+    it from a background thread while the asyncio event loop is mid-render
+    corrupts the internal screen buffer and causes SIGSEGV in the
+    C-extension fill_area() function.
+
+    This wraps invalidate() so calls from background threads are
+    routed through asyncio.call_soon_threadsafe() to the event loop,
+    eliminating the race condition.
+    """
+    if getattr(app, '_hermes_threadsafe_invalidate_installed', False):
+        return
+
+    import asyncio
+    import logging
+
+    _ptk_log = logging.getLogger('hermes.cli.ptk')
+    orig_invalidate = app.invalidate
+
+    def _threadsafe_invalidate(*args, **kwargs):
+        try:
+            # Check if we are in the asyncio event loop thread
+            loop = asyncio.get_running_loop()
+            # If we are in the event loop, call directly
+            orig_invalidate(*args, **kwargs)
+        except RuntimeError:
+            # No running loop in this thread -- MUST route through event loop
+            try:
+                loop = asyncio.get_event_loop()
+                if loop is not None and loop.is_running():
+                    loop.call_soon_threadsafe(
+                        lambda: orig_invalidate(*args, **kwargs)
+                    )
+                    return
+            except (RuntimeError, Exception):
+                pass
+            # Fallback: direct call (may fail, but better than hanging)
+            try:
+                orig_invalidate(*args, **kwargs)
+            except Exception:
+                pass
+        except Exception:
+            # Already in event loop but something went wrong -- suppress
+            _ptk_log.debug(
+                'prompt_toolkit invalidate failed (suppressing)', exc_info=True)
+
+    app.invalidate = _threadsafe_invalidate
+    app._hermes_threadsafe_invalidate_installed = True
+    _ptk_log.info(
+        'Installed thread-safe invalidate wrapper on prompt_toolkit Application'
+    )
+
+
 def _apply_bracketed_paste_timeout_patch() -> None:
     """Patch prompt_toolkit to recover from torn bracketed-paste sequences.
 
