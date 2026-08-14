@@ -18153,6 +18153,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 # so _run_cleanup resets them on exit (#36823).
                 _mark_tui_input_modes_active()
                 # Drive the petdex mascot animation (no-op when no pet enabled).
+                # Thread-safe invalidate prevents ptk segfaults under WSL/tmux
+                _install_threadsafe_invalidate(app)
                 self._pet_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
