@@ -6128,9 +6128,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             app = getattr(self, "_app", None)
             if app is not None:
                 try:
-                    app.invalidate()
+                    # Explicitly route through event loop -- this is a
+                    # background thread and direct invalidate() causes
+                    # SIGSEGV in prompt_toolkit C-extension rendering
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    loop.call_soon_threadsafe(app.invalidate)
                 except Exception:
-                    pass
+                    # Fallback if event loop is unavailable
+                    try:
+                        app.invalidate()
+                    except Exception:
+                        pass
 
     def _pet_start_anim(self) -> None:
         if self._pet_anim_running:
