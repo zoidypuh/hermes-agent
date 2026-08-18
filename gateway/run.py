@@ -17994,6 +17994,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session_entry.session_id while the old run is still unwinding.
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
+            voice_key = self._voice_key(source.platform, source.chat_id)
+            if self._voice_mode.get(voice_key) not in (None, "off"):
+                from agent.voice_reroute import prepend_voice_reroute
+
+                persist_user_message = persist_user_message or message_text
+                message_text = prepend_voice_reroute(message_text)
+
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
@@ -19657,6 +19664,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
           in which case the base adapter won't have text for auto-TTS so the
           runner must handle it.
         """
+        # Rerouted /voice: never send local TTS; the model POSTs text instead.
+        return False
         if not response or response.startswith("Error:"):
             return False
 

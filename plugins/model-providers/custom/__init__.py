@@ -90,6 +90,7 @@ custom = CustomProfile(
         "llamacpp",
         "llama.cpp",
         "llama-cpp",
+        "cliproxy",
     ),
     env_vars=(),  # No fixed key — custom endpoint
     base_url="",  # User-configured

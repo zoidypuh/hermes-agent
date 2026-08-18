@@ -49,7 +49,7 @@ from agent.prompt_builder import (
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -406,10 +406,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         active_profile = _resolve_active_profile_name()
     except Exception:
         active_profile = "default"
+    # Use the ROOT hermes home, not get_hermes_home(): in profile mode
+    # get_hermes_home() is already the profile dir (HERMES_HOME is pinned to
+    # <root>/profiles/<name>), which would double the /profiles/<name> path
+    # and mis-locate the default profile's skills/plugins/cron/memories.
+    # get_default_hermes_root() returns <root> in both default and profile mode.
+    root_home = get_default_hermes_root()
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "
-            "under " + str(get_hermes_home()) + "/profiles/<name>/. Each profile has its own "
+            "under " + str(root_home) + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
             "skills/plugins/cron/memories unless the user explicitly directs "
@@ -418,9 +424,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         post_workspace_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
-            f"and writes {get_hermes_home()}/profiles/{active_profile}/. The default "
-            f"profile's data lives at {get_hermes_home()}/skills/, {get_hermes_home()}/plugins/, "
-            f"{get_hermes_home()}/cron/, {get_hermes_home()}/memories/ — those belong to a "
+            f"and writes {root_home}/profiles/{active_profile}/. The default "
+            f"profile's data lives at {root_home}/skills/, {root_home}/plugins/, "
+            f"{root_home}/cron/, {root_home}/memories/ — those belong to a "
             f"different session run from a different shell. Do NOT modify "
             f"another profile's skills/plugins/cron/memories unless the user "
             f"explicitly directs you to. The cross-profile write guard will "

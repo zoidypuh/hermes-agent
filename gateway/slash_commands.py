@@ -3084,8 +3084,7 @@ class GatewaySlashCommandsMixin:
         if args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
-            if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+            # Rerouted /voice: do not enable adapter TTS.
             return t("gateway.voice.enabled_voice_only")
         elif args in {"off", "disable"}:
             self._voice_mode[voice_key] = "off"
@@ -3096,8 +3095,6 @@ class GatewaySlashCommandsMixin:
         elif args == "tts":
             self._voice_mode[voice_key] = "all"
             self._save_voice_modes()
-            if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
@@ -3132,8 +3129,6 @@ class GatewaySlashCommandsMixin:
             if current == "off":
                 self._voice_mode[voice_key] = "voice_only"
                 self._save_voice_modes()
-                if adapter:
-                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
                 toggle_line = t("gateway.voice.enabled_short")
             else:
                 self._voice_mode[voice_key] = "off"

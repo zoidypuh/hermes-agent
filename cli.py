@@ -13113,73 +13113,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return True
 
     def _enable_voice_mode(self):
-        """Enable voice mode after checking requirements."""
+        """Enable rerouted voice mode: prepend assistant-reply curl, skip TTS/STT."""
         if self._voice_mode:
             _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
             return
 
-        from tools.voice_mode import check_voice_requirements, detect_audio_environment
-
-        # Environment detection -- warn and block in incompatible environments
-        env_check = detect_audio_environment()
-        if not env_check["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode unavailable in this environment:{_RST}")
-            for warning in env_check["warnings"]:
-                _cprint(f"  {_DIM}{warning}{_RST}")
-            return
-
-        reqs = check_voice_requirements()
-        if not reqs["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
-            for line in reqs["details"].split("\n"):
-                _cprint(f"  {_DIM}{line}{_RST}")
-            if reqs["missing_packages"]:
-                if _is_termux_environment():
-                    _cprint(f"\n  {_BOLD}Option 1: pkg install termux-api{_RST}")
-                    _cprint(f"  {_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}")
-                    _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
-                else:
-                    _cprint(f"\n  {_BOLD}Install: {sys.executable} -m pip install {' '.join(reqs['missing_packages'])}{_RST}")
-            return
-
         with self._voice_lock:
             self._voice_mode = True
+            self._voice_tts = False
 
-        # Check config for auto_tts (shape-safe — malformed ``voice:`` YAML
-        # leaves ``voice_config`` as a non-dict, so guard before .get()).
-        try:
-            from hermes_cli.config import load_config
-            _raw_voice = load_config().get("voice")
-            voice_config = _raw_voice if isinstance(_raw_voice, dict) else {}
-            if voice_config.get("auto_tts", False):
-                with self._voice_lock:
-                    self._voice_tts = True
-        except Exception:
-            pass
+        from agent.voice_reroute import resolve_agent_id
 
-        # Voice mode instruction is injected as a user message prefix (not a
-        # system prompt change) to avoid invalidating the prompt cache.  See
-        # _voice_message_prefix property and its usage in _process_message().
-
-        tts_status = " (TTS enabled)" if self._voice_tts else ""
-        # Use the startup-pinned cache so the advertised shortcut always
-        # matches the live prompt_toolkit binding — reading live config
-        # here would drift after a mid-session config edit (Copilot
-        # round-14 on #19835, same class as round-13).
-        _ptt_display = self._voice_record_key_label()
-        _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}{_ptt_display} to start/stop recording{_RST}")
-        # Spoken-stop hint sourced from voice.stop_phrases (first entry); the
-        # helper returns "" when stop phrases are disabled — show no hint then.
-        try:
-            from tools.voice_mode import voice_stop_hint
-            _stop_hint = voice_stop_hint()
-        except Exception:
-            _stop_hint = ""
-        if _stop_hint:
-            _cprint(f"  {_DIM}{_stop_hint}{_RST}")
-        _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
-        _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+        agent_id = resolve_agent_id()
+        _cprint(f"\n{_ACCENT}Voice mode enabled (rerouted to assistant-reply){_RST}")
+        _cprint(f"  {_DIM}Each prompt will instruct the agent to POST its answer as text.{_RST}")
+        _cprint(f"  {_DIM}agent_id: {agent_id}{_RST}")
+        _cprint(f"  {_DIM}/voice off  to disable{_RST}")
 
     def _typed_voice_stop(self, user_input) -> bool:
         """Typed bare stop phrase during an active voice chat ends the chat.
@@ -14258,7 +14207,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             stop_event = None
             _tts_normal_exit = False
 
-            if self._voice_tts:
+            if False and self._voice_tts:
                 try:
                     from tools.tts_tool import (
                         _import_sounddevice,
@@ -14317,15 +14266,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # #75780).
                     self._voice_last_tts_text = (self._voice_last_tts_text or "") + delta
 
-            # When voice mode is active, prepend a brief instruction so the
-            # model responds concisely. The prefix is API-call-local only —
+            # Rerouted /voice: skip TTS/STT and prepend an assistant-reply
+            # curl instruction. Prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if voice_input and isinstance(message, str):
-                _voice_prefix = (
-                    "[Voice input — respond concisely and conversationally, "
-                    "2-3 sentences max. No code blocks or markdown.] "
-                )
+            if self._voice_mode:
+                from agent.voice_reroute import voice_reroute_prefix
+
+                _voice_prefix = voice_reroute_prefix()
 
             def run_agent():
                 nonlocal result

@@ -9720,13 +9720,20 @@ def _run_prompt_submit(
             # begin() first — it cuts any still-speaking previous turn, and
             # that cut IS this turn's barge-in, so it must latch before we
             # consume the latch below.
-            tts_queue = _tts_stream_begin()
+            # Rerouted /voice: skip local TTS/barge-in/thinking sounds.
+            if _voice_mode_enabled():
+                from agent.voice_reroute import prepend_voice_reroute
+
+                run_message = prepend_voice_reroute(run_message)
+            tts_queue = None
+            if False:
+                tts_queue = _tts_stream_begin()
 
             # Full-duplex agent-turn listener: armed at utterance-submit so
             # the user can interject DURING generation, not just during
             # playback. _tts_stream_begin arms it too when a pipeline
             # starts; this covers voice mode without working TTS.
-            if _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
+            if False and _voice_mode_enabled() and _voice_cfg_dict().get("barge_in", True):
                 _arm_full_duplex_listener()
 
             # Ambient "thinking" sound (voice mode only): calm bubble blips
@@ -9736,7 +9743,7 @@ def _run_prompt_submit(
             # stopped in the finally the instant the turn ends.
             # voice.thinking_sound config-gates it; macOS TCC handled inside.
             thinking_started = False
-            if _voice_mode_enabled():
+            if False and _voice_mode_enabled():
                 try:
                     from tools.voice_mode import (
                         is_audio_output_active,
