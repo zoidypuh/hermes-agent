@@ -2374,13 +2374,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             p = Path(ext_dir)
             if (p / "dist" / "entry.js").is_file():
                 node = _node_bin("node")
-                return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
+                return _tui_node_argv(node, p / "dist" / "entry.js"), p
 
         # 1b. Bundled prebuilt TUI (Docker image, Nix build, or prior npm build)
         bundled = _find_bundled_tui()
         if bundled is not None:
             node = _node_bin("node")
-            return [node, "--expose-gc", str(bundled)], bundled.parent
+            return _tui_node_argv(node, bundled), bundled.parent
 
     # No prebuilt bundle available (or --dev, which never uses one) — we're
     # about to npm install/build from source, so the workspace must exist.
@@ -2534,7 +2534,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
 
     node = _node_bin("node")
-    return [node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
+    return _tui_node_argv(node, tui_dir / "dist" / "entry.js"), tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
@@ -2632,28 +2632,45 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+# Node's NODE_OPTIONS allowlist rejects these (same class as --expose-gc).
+# Pass them as argv in _tui_node_argv() instead, and strip them if a shell
+# or env.d file stuffed them into NODE_OPTIONS.
+_TUI_NODE_OPTIONS_FORBIDDEN = frozenset(
+    {
+        "--expose-gc",
+        "--no-concurrent-recompilation",
+    }
+)
+
+
+def _tui_node_argv(node: str, entry: str | Path) -> list[str]:
+    """Node argv for the TUI: V8 flags Node forbids in NODE_OPTIONS, then entry.
+
+    ``--no-concurrent-recompilation`` avoids a Turbofan
+    ``LoadElimination::ReduceStoreField`` fatal ("unreachable code") on some
+    distro Node builds during background optimizing compiles.
+    """
+    return [node, "--expose-gc", "--no-concurrent-recompilation", str(entry)]
+
+
 def _apply_tui_node_options(env: dict) -> None:
     """Merge V8 flags the TUI needs into ``NODE_OPTIONS``.
 
     Heap cap: default Node cap is ~1.5–4GB and can fatal-OOM on long sessions.
     Token-level merge so a user-supplied ``--max-old-space-size`` is kept.
 
-    Concurrent Turbofan: V8's ``LoadElimination::ReduceStoreField`` has a
-    known ``unreachable code`` fatal during background optimizing compiles
-    (Node issues #51555, #55289, #57556). The TUI's Ink/React hot path
-    triggers it on some distro Node builds (Ubuntu ``/usr/bin/node``).
-    ``--no-concurrent-recompilation`` keeps optimization on the main thread
-    and avoids the dispatcher crash. Users can still set the flag themselves;
-    we only add it when missing.
-
-    ``--expose-gc`` is *not* added here: Node rejects it in NODE_OPTIONS.
-    It is passed as a direct argv flag in ``_make_tui_argv()`` instead.
+    Flags Node rejects in NODE_OPTIONS (``--expose-gc``,
+    ``--no-concurrent-recompilation``) are stripped here and passed as argv
+    by ``_tui_node_argv()`` instead — otherwise ``hermes --tui`` dies before
+    the app starts.
     """
-    tokens = env.get("NODE_OPTIONS", "").split()
+    tokens = [
+        t
+        for t in env.get("NODE_OPTIONS", "").split()
+        if t not in _TUI_NODE_OPTIONS_FORBIDDEN
+    ]
     if not any(t.startswith("--max-old-space-size=") for t in tokens):
         tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
-    if "--no-concurrent-recompilation" not in tokens:
-        tokens.append("--no-concurrent-recompilation")
     env["NODE_OPTIONS"] = " ".join(tokens)
 
 

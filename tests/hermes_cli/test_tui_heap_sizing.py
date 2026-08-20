@@ -53,8 +53,8 @@ class TestResolveTuiHeapMb:
 
 
 class TestNodeOptionsTokenMerge:
-    """``_apply_tui_node_options`` adds the heap cap and the Turbofan
-    concurrent-recompilation workaround unless the user already set them."""
+    """``_apply_tui_node_options`` adds the heap cap and strips flags Node
+    rejects in NODE_OPTIONS (those go on argv via ``_tui_node_argv``)."""
 
     def _merge(self, node_options, limit_bytes):
         with mock.patch.object(m, "_read_cgroup_memory_limit", return_value=limit_bytes):
@@ -63,19 +63,26 @@ class TestNodeOptionsTokenMerge:
             return env["NODE_OPTIONS"]
 
     def test_unconstrained_empty(self):
-        assert (
-            self._merge("", None)
-            == "--max-old-space-size=8192 --no-concurrent-recompilation"
-        )
+        assert self._merge("", None) == "--max-old-space-size=8192"
 
     def test_preserves_other_flags(self):
         assert (
             self._merge("--enable-source-maps", 4 * GB)
-            == "--enable-source-maps --max-old-space-size=3072 --no-concurrent-recompilation"
+            == "--enable-source-maps --max-old-space-size=3072"
         )
 
-    def test_does_not_duplicate_workaround(self):
+    def test_strips_forbidden_v8_flags(self):
         assert (
-            self._merge("--no-concurrent-recompilation", None)
-            == "--no-concurrent-recompilation --max-old-space-size=8192"
+            self._merge("--no-concurrent-recompilation --expose-gc", None)
+            == "--max-old-space-size=8192"
         )
+
+
+class TestTuiNodeArgv:
+    def test_includes_turbofan_workaround(self):
+        assert m._tui_node_argv("/usr/bin/node", "/tmp/entry.js") == [
+            "/usr/bin/node",
+            "--expose-gc",
+            "--no-concurrent-recompilation",
+            "/tmp/entry.js",
+        ]
