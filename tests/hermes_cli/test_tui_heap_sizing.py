@@ -53,19 +53,29 @@ class TestResolveTuiHeapMb:
 
 
 class TestNodeOptionsTokenMerge:
-    """The _launch_tui token-merge block must add the sized cap unless the user
-    already supplied one, and must preserve unrelated NODE_OPTIONS flags."""
+    """``_apply_tui_node_options`` adds the heap cap and the Turbofan
+    concurrent-recompilation workaround unless the user already set them."""
 
     def _merge(self, node_options, limit_bytes):
         with mock.patch.object(m, "_read_cgroup_memory_limit", return_value=limit_bytes):
-            tokens = node_options.split()
-            if not any(t.startswith("--max-old-space-size=") for t in tokens):
-                tokens.append(f"--max-old-space-size={m._resolve_tui_heap_mb()}")
-            return " ".join(tokens)
+            env = {"NODE_OPTIONS": node_options}
+            m._apply_tui_node_options(env)
+            return env["NODE_OPTIONS"]
 
     def test_unconstrained_empty(self):
-        assert self._merge("", None) == "--max-old-space-size=8192"
-
+        assert (
+            self._merge("", None)
+            == "--max-old-space-size=8192 --no-concurrent-recompilation"
+        )
 
     def test_preserves_other_flags(self):
-        assert self._merge("--enable-source-maps", 4 * GB) == "--enable-source-maps --max-old-space-size=3072"
+        assert (
+            self._merge("--enable-source-maps", 4 * GB)
+            == "--enable-source-maps --max-old-space-size=3072 --no-concurrent-recompilation"
+        )
+
+    def test_does_not_duplicate_workaround(self):
+        assert (
+            self._merge("--no-concurrent-recompilation", None)
+            == "--no-concurrent-recompilation --max-old-space-size=8192"
+        )

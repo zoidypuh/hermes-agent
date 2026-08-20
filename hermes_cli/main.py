@@ -2632,6 +2632,31 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _apply_tui_node_options(env: dict) -> None:
+    """Merge V8 flags the TUI needs into ``NODE_OPTIONS``.
+
+    Heap cap: default Node cap is ~1.5–4GB and can fatal-OOM on long sessions.
+    Token-level merge so a user-supplied ``--max-old-space-size`` is kept.
+
+    Concurrent Turbofan: V8's ``LoadElimination::ReduceStoreField`` has a
+    known ``unreachable code`` fatal during background optimizing compiles
+    (Node issues #51555, #55289, #57556). The TUI's Ink/React hot path
+    triggers it on some distro Node builds (Ubuntu ``/usr/bin/node``).
+    ``--no-concurrent-recompilation`` keeps optimization on the main thread
+    and avoids the dispatcher crash. Users can still set the flag themselves;
+    we only add it when missing.
+
+    ``--expose-gc`` is *not* added here: Node rejects it in NODE_OPTIONS.
+    It is passed as a direct argv flag in ``_make_tui_argv()`` instead.
+    """
+    tokens = env.get("NODE_OPTIONS", "").split()
+    if not any(t.startswith("--max-old-space-size=") for t in tokens):
+        tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
+    if "--no-concurrent-recompilation" not in tokens:
+        tokens.append("--no-concurrent-recompilation")
+    env["NODE_OPTIONS"] = " ".join(tokens)
+
+
 def _safe_tui_cwd(env: Optional[dict] = None) -> str:
     """Return a stable cwd value for the Node TUI child environment."""
     try:
@@ -2779,24 +2804,8 @@ def _launch_tui(
         env["HERMES_TUI_TOOL_PROGRESS"] = "off"
     if accept_hooks:
         env["HERMES_ACCEPT_HOOKS"] = "1"
-    # Guarantee a generous V8 heap for the TUI. Default node cap is ~1.5–4GB
-    # depending on version and can fatal-OOM on long sessions with large
-    # transcripts / reasoning blobs. We target 8GB on an unconstrained host,
-    # but V8 is NOT cgroup-aware: in a memory-limited Docker/k8s container a
-    # flat 8GB heap grows past the container limit and the cgroup OOM-killer
-    # SIGKILLs Node — running no JS handler, writing no breadcrumb, leaving the
-    # user with only a bare gateway `stdin EOF`. _resolve_tui_heap_mb() reads
-    # the real cgroup limit and sizes the cap below it so V8 GCs/exits
-    # gracefully (and the memory monitor's onCritical breadcrumb can fire)
-    # instead of being reaped silently. Token-level merge: respect any
-    # user-supplied --max-old-space-size (they may have set it higher).
-    # --expose-gc is *not* added here: Node rejects it in NODE_OPTIONS
-    # ("--expose-gc is not allowed in NODE_OPTIONS") and refuses to start.
-    # It is passed as a direct argv flag in _make_tui_argv() instead.
-    _tokens = env.get("NODE_OPTIONS", "").split()
-    if not any(t.startswith("--max-old-space-size=") for t in _tokens):
-        _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
-    env["NODE_OPTIONS"] = " ".join(_tokens)
+    # Heap cap + V8 Turbofan workaround (see _apply_tui_node_options).
+    _apply_tui_node_options(env)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
     # Ink app.  Because we start from a full os.environ snapshot (via
     # build_subprocess_env), an exported/stale value
