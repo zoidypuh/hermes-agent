@@ -135,7 +135,8 @@ def gpu_category(status: GpuStatus) -> str:
 
 
 def format_gpu(status: GpuStatus) -> str:
-    """Compact label like ``GPU 18.8/32.0G`` (empty if N/A)."""
+    """Compact label like ``19.0/31.8G`` (empty if N/A). No ``GPU`` prefix —
+    the footer position makes the source obvious."""
     if not status.available or status.used_mib is None or status.total_mib is None:
         return ""
-    return f"GPU {status.used_mib / 1024:.1f}/{status.total_mib / 1024:.1f}G"
+    return f"{status.used_mib / 1024:.1f}/{status.total_mib / 1024:.1f}G"
