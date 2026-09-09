@@ -55,7 +55,7 @@ CATEGORY_DIM = "dim"
 # (upper bound inclusive, category) for a *remaining* quota; first match wins.
 _LEVEL_CATEGORIES = ((10, CATEGORY_CRITICAL), (20, CATEGORY_BAD), (50, CATEGORY_WARN))
 
-_CACHE_TTL_SECONDS = 30.0
+_CACHE_TTL_SECONDS = 600.0
 _cache: dict[str, tuple[float, UsageStatus]] = {}
 
 _WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
@@ -204,14 +204,14 @@ def _cached(key: str, loader) -> UsageStatus:
 
 
 def read_chatgpt_usage(use_cache: bool = True) -> UsageStatus:
-    """Remaining ChatGPT weekly quota (cached ~30s)."""
+    """Remaining ChatGPT weekly quota (cached ~10min)."""
     if use_cache:
         return _cached("chatgpt", _chatgpt_remaining_uncached)
     return _chatgpt_remaining_uncached()
 
 
 def read_grok_usage(use_cache: bool = True) -> UsageStatus:
-    """Remaining Grok quota (cached ~30s)."""
+    """Remaining Grok quota (cached ~10min)."""
     if use_cache:
         return _cached("grok", _grok_remaining_uncached)
     return _grok_remaining_uncached()
