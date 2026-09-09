@@ -12,7 +12,8 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
-  SystemBatteryResponse
+  SystemBatteryResponse,
+  SystemGpuResponse
 } from '../../../gatewayTypes.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -665,6 +666,47 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`battery indicator ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
+    help: 'toggle a color-coded GPU VRAM indicator in the status bar [on|off|status]',
+    name: 'gpu',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+
+      // `/gpu status` reports the current setting plus a live reading,
+      // matching the CLI surface. Fetch on demand so it works even while the
+      // indicator (and its poller) is off.
+      if (mode === 'status' || mode === 'show') {
+        const state = ctx.ui.gpu ? 'on' : 'off'
+
+        ctx.gateway
+          .rpc<SystemGpuResponse>('system.gpu', {})
+          .then(r => {
+            if (r?.available && typeof r.used_mib === 'number' && typeof r.total_mib === 'number') {
+              ctx.transcript.sys(
+                `gpu indicator ${state} — currently GPU ${(r.used_mib / 1024).toFixed(1)}/${(r.total_mib / 1024).toFixed(1)}G${r.name ? ` (${r.name})` : ''}`
+              )
+            } else {
+              ctx.transcript.sys(`gpu indicator ${state} — no NVIDIA GPU detected on this machine`)
+            }
+          })
+          .catch(() => ctx.transcript.sys(`gpu indicator ${state}`))
+
+        return
+      }
+
+      const next = flagFromArg(arg, ctx.ui.gpu)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /gpu [on|off|status]')
+      }
+
+      patchUiState({ gpu: next, ...(next ? {} : { gpuStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'gpu', value: next ? 'on' : 'off' }).catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`gpu indicator ${next ? 'on' : 'off'}`))
     }
   },
 

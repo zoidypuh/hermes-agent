@@ -423,6 +423,52 @@ describe('StatusRule battery indicator', () => {
   })
 })
 
+describe('StatusRule GPU VRAM indicator', () => {
+  it('renders the VRAM label in GiB', () => {
+    const element = StatusRule({
+      ...baseProps,
+      gpu: { available: true, category: 'warn', name: 'NVIDIA GeForce RTX 5090', total_mib: 32607, used_mib: 19442 }
+    })
+
+    expect(textContent(element)).toContain('GPU 19.0/31.8G')
+  })
+
+  it('colours the read-out by category (critical → theme statusCritical)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      gpu: { available: true, category: 'critical', name: null, total_mib: 1000, used_mib: 960 }
+    })
+
+    const leaf = findElementWithText(element, 'GPU')
+    expect(leaf?.props.color).toBe(DEFAULT_THEME.color.statusCritical)
+  })
+
+  it('omits the segment when gpu is null', () => {
+    const element = StatusRule({ ...baseProps, gpu: null })
+
+    expect(textContent(element)).not.toContain('GPU')
+  })
+
+  it('omits the segment when no GPU is available', () => {
+    const element = StatusRule({
+      ...baseProps,
+      gpu: { available: false, category: 'dim', name: null, total_mib: null, used_mib: null }
+    })
+
+    expect(textContent(element)).not.toContain('GPU')
+  })
+
+  it('hides behind the status-bar fields filter', () => {
+    const element = StatusRule({
+      ...baseProps,
+      gpu: { available: true, category: 'good', name: null, total_mib: 1000, used_mib: 100 },
+      statusBarFields: new Set(['model'])
+    })
+
+    expect(textContent(element)).not.toContain('GPU')
+  })
+})
+
 describe('StatusRule idle-since read-out', () => {
   // The IdleSince component uses hooks, so it can't be invoked outside a
   // renderer — assert on the element tree instead (same reason the duration

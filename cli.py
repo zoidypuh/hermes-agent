@@ -2939,6 +2939,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        self._gpu_visible = bool(CLI_CONFIG["display"].get("gpu", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
         self._status_bar_suppressed_after_resize = self._resize_recovery_pending = False

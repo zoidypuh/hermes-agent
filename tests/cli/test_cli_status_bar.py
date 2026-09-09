@@ -500,6 +500,64 @@ class TestStatusBarFieldConfig:
         assert "12.4K/200K" in text
         assert "🗜️" in text
 
+    def test_gpu_only(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._gpu_visible = True
+        fake = types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=True, used_mib=19442, total_mib=32607,
+                name="NVIDIA GeForce RTX 5090",
+            ),
+            format_gpu=lambda _s: "GPU 19.0/31.8G",
+            gpu_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.gpu": fake}):
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "gpu"]}}}):
+                text = cli_obj._build_status_bar_text(width=120)
+        assert "GPU 19.0/31.8G" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_gpu_hidden_by_field_filter(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._gpu_visible = True
+        fake = types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=True, used_mib=19442, total_mib=32607,
+                name="NVIDIA GeForce RTX 5090",
+            ),
+            format_gpu=lambda _s: "GPU 19.0/31.8G",
+            gpu_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.gpu": fake}):
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
+                text = cli_obj._build_status_bar_text(width=120)
+        assert "GPU 19.0/31.8G" not in text
+        assert "claude-sonnet-4-20250514" in text
+
     def test_field_set_is_cached_per_instance(self):
         cli_obj = _make_cli()
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):

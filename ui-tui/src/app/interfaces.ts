@@ -49,6 +49,16 @@ export interface BatteryInfo {
   plugged: null | boolean
 }
 
+// A single GPU VRAM reading pushed from the Python gateway (`system.gpu`).
+// `available` is false on machines without an NVIDIA GPU; MiB values mirror nvidia-smi.
+export interface GpuInfo {
+  available: boolean
+  category: BatteryCategory
+  name: null | string
+  total_mib: null | number
+  used_mib: null | number
+}
+
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
 export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
@@ -318,6 +328,8 @@ export interface TranscriptRow {
 export interface UiState {
   battery: boolean
   batteryStatus: BatteryInfo | null
+  gpu: boolean
+  gpuStatus: GpuInfo | null
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode

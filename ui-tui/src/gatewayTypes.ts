@@ -78,6 +78,7 @@ export type CommandDispatchResponse =
 
 export interface ConfigDisplayConfig {
   battery?: boolean
+  gpu?: boolean
   bell_on_complete?: boolean
   bell_on_prompt?: boolean
   busy_input_mode?: string
@@ -177,6 +178,14 @@ export interface SystemBatteryResponse {
   category?: string
   percent?: null | number
   plugged?: null | boolean
+}
+
+export interface SystemGpuResponse {
+  available?: boolean
+  category?: string
+  name?: null | string
+  total_mib?: null | number
+  used_mib?: null | number
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────

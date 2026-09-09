@@ -78,6 +78,60 @@ class CLIStatusBarMixin:
             "critical": "class:status-bar-critical",
         }.get(category, _DIM)
 
+    @staticmethod
+    def _gpu_status_style(category: str) -> str:
+        return {
+            "good": "class:status-bar-good",
+            "warn": "class:status-bar-warn",
+            "bad": "class:status-bar-bad",
+            "critical": "class:status-bar-critical",
+        }.get(category, _DIM)
+
+    def _handle_gpu_command(self, cmd_original: str) -> None:
+        """``/gpu`` toggles, ``/gpu on|off`` sets, ``/gpu status`` reports the
+        setting plus a live VRAM reading. Persisted to ``display.gpu``."""
+        from cli import save_config_value
+        parts = (cmd_original or "").split()
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        try:
+            from agent.gpu import format_gpu, read_gpu
+            reading = read_gpu(use_cache=False)
+        except Exception:
+            reading = None
+
+        def _detail(no_gpu: str) -> str:
+            if reading is None:
+                return ""
+            return f" — {format_gpu(reading)}" if reading.available else f" — {no_gpu}"
+
+        if arg in ("status", "show"):
+            state = "on" if self._gpu_visible else "off"
+            detail = _detail("no NVIDIA GPU detected on this machine")
+            if reading is not None and reading.available:
+                detail = f" — currently {format_gpu(reading)}"
+            self._console_print(f"  GPU VRAM indicator {state}{detail}")
+            return
+
+        if arg in ("on", "true", "yes"):
+            target = True
+        elif arg in ("off", "false", "no"):
+            target = False
+        elif arg in ("", "toggle"):
+            target = not self._gpu_visible
+        else:
+            self._console_print("  Usage: /gpu [on|off|status]")
+            return
+
+        self._gpu_visible = target
+        save_config_value("display.gpu", target)
+        if target:
+            self._console_print(
+                f"  GPU VRAM indicator on{_detail('no NVIDIA GPU detected, so nothing will show here')}"
+            )
+        else:
+            self._console_print("  GPU VRAM indicator off")
+
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""
@@ -207,6 +261,8 @@ class CLIStatusBarMixin:
             "active_background_subagents": 0,
             "battery_label": "",
             "battery_category": "dim",
+            "gpu_label": "",
+            "gpu_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "goal_active": False,
             "goal_turns_used": 0,
@@ -228,6 +284,17 @@ class CLIStatusBarMixin:
                 _batt = read_battery()
                 snapshot["battery_label"] = format_battery(_batt)
                 snapshot["battery_category"] = battery_category(_batt)
+            except Exception:
+                pass
+
+        # GPU VRAM reads are memoised inside agent.gpu, so per-repaint polling is cheap.
+        if getattr(self, "_gpu_visible", False):
+            try:
+                from agent.gpu import format_gpu, gpu_category, read_gpu
+
+                _gpu = read_gpu()
+                snapshot["gpu_label"] = format_gpu(_gpu)
+                snapshot["gpu_category"] = gpu_category(_gpu)
             except Exception:
                 pass
 
@@ -949,7 +1016,7 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
+        focus, yolo, stash, battery, gpu, title, total_tokens (opt-in only). Order is fixed; the
         config controls visibility only.
         """
         from cli import CLI_CONFIG
@@ -1060,14 +1127,19 @@ class CLIStatusBarMixin:
             if width is None:
                 width = self._get_tui_terminal_width()
             model_short = snapshot["model_short"]
-            battery_label = snapshot.get("battery_label") or ""
             field_set = self._get_status_bar_field_set()
             show_title = field_set is None or "title" in field_set
+            battery_label = (snapshot.get("battery_label") or ""
+                             if field_set is None or "battery" in field_set else "")
+            gpu_label = (snapshot.get("gpu_label") or ""
+                         if field_set is None or "gpu" in field_set else "")
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
             parts = ["".join(t for _, t in seg) for seg in segs] or [f"⚕ {model_short}"]
-            # Narrow bars always join the battery with │; wider tiers use the tier separator.
+            # Narrow bars always join the battery/gpu with │; wider tiers use the tier separator.
+            if gpu_label:
+                parts.insert(0, gpu_label)
             if battery_label:
                 parts.insert(0, battery_label)
             if width < 52:
@@ -1117,6 +1189,12 @@ class CLIStatusBarMixin:
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
                 frags[0:0] = [(_SB, " "), (battery_style, battery_label), (_DIM, " │")]
+            # GPU VRAM sits right after the battery (or first when no battery).
+            gpu_label = snapshot.get("gpu_label") or ""
+            if gpu_label and _ok("gpu"):
+                gpu_style = self._gpu_status_style(snapshot.get("gpu_category", "dim"))
+                at = 3 if battery_label and _ok("battery") else 0
+                frags[at:at] = [(_SB, " "), (gpu_style, gpu_label), (_DIM, " │")]
 
             frags = self._right_align_status_title_fragments(frags, session_title, width)
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)

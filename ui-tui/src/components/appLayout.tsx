@@ -496,6 +496,7 @@ const StatusRulePane = memo(function StatusRulePane({
         compacting={ui.compacting}
         cwdLabel={status.cwdLabel}
         focusView={ui.focusView}
+        gpu={ui.gpu ? ui.gpuStatus : null}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}

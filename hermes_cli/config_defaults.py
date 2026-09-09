@@ -818,6 +818,7 @@ DEFAULT_CONFIG = {
         "turn_completion_explainer": True,
         "show_cost": False,       # $ cost in the status bar
         "battery": False,         # battery read-out first in status bar; no-op w/o battery
+        "gpu": False,             # GPU VRAM read-out in status bar; no-op w/o NVIDIA GPU
         # Focus view (/focus): display-only. Pins tool_progress to "off", reports per-turn
         # hidden-line count, pins a "focus" status segment. focus_saved_tool_progress holds the mode
         # /focus off restores. Never affects what the model sees (focus_view.py).
@@ -894,7 +895,7 @@ DEFAULT_CONFIG = {
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
+        # stash, battery, gpu, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
         # context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],

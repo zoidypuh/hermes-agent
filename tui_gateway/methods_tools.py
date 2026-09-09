@@ -214,6 +214,20 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
 
 
+@method("system.gpu")
+def _(rid, params: dict) -> dict:
+    """Host GPU VRAM for the status bar. Always resolves; ``available: false`` = no GPU or read failed."""
+    try:
+        gpu = _tools_mod("agent.gpu")
+        st = gpu.read_gpu()
+        return _ok(rid, {
+            "available": st.available, "used_mib": st.used_mib, "total_mib": st.total_mib,
+            "name": st.name, "category": gpu.gpu_category(st)})
+    except Exception:
+        return _ok(rid, {"available": False, "used_mib": None, "total_mib": None,
+                         "name": None, "category": "dim"})
+
+
 # One-expression handlers: name → (fail_code, payload builder(params)).
 _SIMPLE_RPCS = {
     # Session-scoped view of the background process registry (desktop status stack).
