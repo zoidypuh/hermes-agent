@@ -152,6 +152,8 @@ def _inject_steer_into_newest_tool_result(agent: Any, messages: Any, steer_text:
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
             from agent.prompt_builder import format_steer_marker
+            from agent.switchboard_turn import apply_switchboard_redirect
+            steer_text = apply_switchboard_redirect(agent, steer_text, steer_text, kind="steer")
             marker = format_steer_marker(steer_text)
             existing = _sm.get("content", "")
             if isinstance(existing, str):

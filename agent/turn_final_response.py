@@ -72,6 +72,11 @@ def finish_text_response(
             result=result,
         )
 
+    switchboard_turn = getattr(agent, "_switchboard_turn", None)
+    if switchboard_turn is not None:
+        # Remove only this final message's transport prefix before persistence.
+        # Status/tool commentary and all earlier conversation context remain intact.
+        assistant_message.content = switchboard_turn.clean_final_text(assistant_message.content)
     final_response = assistant_message.content or ""
     # Unmute: _mute_post_response from a housekeeping tool turn must not silence
     # empty-response warnings on the final response path.
