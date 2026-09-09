@@ -118,6 +118,10 @@ class InterruptControlMixin:
 
         def _publish_interrupt_state() -> None:
             self._interrupt_requested = True
+            # Local invalidation only; abort() never performs network I/O here.
+            switchboard_turn = getattr(self, "_switchboard_turn", None)
+            if switchboard_turn is not None:
+                switchboard_turn.abort("interrupted")
             self._interrupt_message = message
             self._tool_interrupt_reason = tool_interrupt_reason
             _hard_event = getattr(self, "_hard_interrupt_requested", None) if hard_cancel else None
@@ -152,6 +156,8 @@ class InterruptControlMixin:
                 _fence(), when_in_flight=False, failure_log="Compression hard-cancel fence admission failed"
             )
             self._pending_redirect = None
+            self._switchboard_pending_inputs = {}
+            self._switchboard_drained_inputs = {}
 
         # Codex watches a private interrupt event rather than Hermes' per-thread flag.
         _request_interrupt = _ic_codex_method(self, "request_interrupt")
@@ -205,13 +211,27 @@ class InterruptControlMixin:
             getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
+                self._switchboard_pending_inputs = {}
+                self._switchboard_drained_inputs = {}
         self._interrupt_thread_signal_pending = False
         if self._execution_thread_id is not None:
             _set_interrupt(False, self._execution_thread_id)
         _ic_signal_tool_workers(self, False)
         # A hard interrupt supersedes any pending /steer — its target iteration will no longer happen.
         with _ic_lock(self, "_pending_steer_lock"):
-            self._pending_steer = None
+            native_steer = any(
+                (getattr(self, slot, None) or {}).get("steer")
+                for slot in ("_switchboard_pending_inputs", "_switchboard_drained_inputs")
+            )
+            # A soft model redirect must retain a later native correction: its
+            # generation already fenced the older reply, and it still needs a
+            # tool-result drain (or the finalizer's next-turn handoff).
+            if not (preserve_redirect and native_steer):
+                self._pending_steer = None
+                for slot in ("_switchboard_pending_inputs", "_switchboard_drained_inputs"):
+                    inputs = getattr(self, slot, None)
+                    if inputs:
+                        inputs.pop("steer", None)
         return True
 
     def steer(self, text: str) -> bool:
@@ -223,6 +243,8 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            from agent.switchboard_turn import queue_switchboard_redirect
+            queue_switchboard_redirect(self, cleaned, kind="steer")
         return True
 
     def redirect(self, text: str) -> bool:
@@ -273,6 +295,8 @@ class InterruptControlMixin:
             )
             self._interrupt_requested = True
             self._interrupt_message = None
+            from agent.switchboard_turn import queue_switchboard_redirect
+            queue_switchboard_redirect(self, cleaned)
 
         # Interrupt only the model request — no fan-out to tool workers / child agents as interrupt() does.
         _execution_thread_id = getattr(self, "_execution_thread_id", None)
@@ -294,6 +318,8 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_redirect_lock"):
             text = _ic_slot(self, "_pending_redirect_lock", "_pending_redirect")
             self._pending_redirect = None
+            from agent.switchboard_turn import take_switchboard_input
+            take_switchboard_input(self, text, kind="redirect")
         return text
 
     def _drain_pending_steer(self) -> Optional[str]:
@@ -301,4 +327,6 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
+            from agent.switchboard_turn import take_switchboard_input
+            take_switchboard_input(self, text, kind="steer")
         return text

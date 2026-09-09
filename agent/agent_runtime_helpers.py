@@ -3158,6 +3158,8 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # No tool result in this batch (e.g. all skipped by interrupt).
         _requeue_pending_steer(agent, steer_text)
         return
+    from agent.switchboard_turn import apply_switchboard_redirect
+    steer_text = apply_switchboard_redirect(agent, steer_text, steer_text, kind="steer")
     marker = format_steer_marker(steer_text)
     existing_content = target.get("content", "")
     if isinstance(existing_content, str):

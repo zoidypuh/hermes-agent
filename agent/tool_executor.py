@@ -611,6 +611,11 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
 def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
     hook-modified args applied. Hook failures never block."""
+    switchboard_turn = getattr(agent, "_switchboard_turn", None)
+    if switchboard_turn is not None:
+        block_msg = switchboard_turn.before_tool(ref.name, ref.args)
+        if block_msg is not None:
+            return block_msg, ref.args
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 

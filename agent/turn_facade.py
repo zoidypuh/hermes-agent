@@ -48,6 +48,7 @@ class TurnFacadeMixin:
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.turn_facade_lease import admit_durable_turn_lease
+        from agent.switchboard_turn import current_switchboard_turn
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -65,6 +66,7 @@ class TurnFacadeMixin:
             else ""
         )
         relay_lease = relay_turn = lease = None
+        switchboard_turn = None
         # Scope tokens start None: early returns leave the try before the set_*() calls and
         # the finally resets each one unconditionally.
         token = affinity_token = acct_token = None
@@ -114,6 +116,15 @@ class TurnFacadeMixin:
                 getattr(self, "_session_db", None), getattr(self, "session_id", None)
             )
 
+            # Preserve the existing delta consumer and durable original user message.
+            from agent.switchboard_turn import prepare_switchboard_turn
+
+            switchboard_turn, user_message, persist_user_message, stream_callback = (
+                prepare_switchboard_turn(
+                    self, user_message, persist_user_message, stream_callback, relay_turn_id,
+                )
+            )
+
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             with bind_subagent_parent(self), scoped_runtime_main({}):
                 try:
@@ -133,6 +144,9 @@ class TurnFacadeMixin:
                     if lease is not None:
                         lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
+            switchboard_turn = current_switchboard_turn(self, relay_turn_id)
+            if switchboard_turn is not None:
+                switchboard_turn.finish(terminal)
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
                 else "failed" if terminal.get("failed") is True
@@ -144,6 +158,9 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
+            switchboard_turn = current_switchboard_turn(self, relay_turn_id)
+            if switchboard_turn is not None:
+                switchboard_turn.abort("turn_error")
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
                 type(exc).__name__ == "CancelledError"
             ):
@@ -159,6 +176,11 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            switchboard_turn = current_switchboard_turn(self, relay_turn_id)
+            if switchboard_turn is not None:
+                switchboard_turn.close()
+            self._switchboard_pending_inputs = {}
+            self._switchboard_drained_inputs = {}
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

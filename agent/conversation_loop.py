@@ -282,6 +282,8 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
     correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
+    from agent.switchboard_turn import apply_switchboard_redirect
+    correction = apply_switchboard_redirect(agent, text, correction)
 
     # The live tail is normally user or tool, so an assistant placeholder + correction
     # keeps strict alternation; if the tail is already assistant, the checkpoint is folded
