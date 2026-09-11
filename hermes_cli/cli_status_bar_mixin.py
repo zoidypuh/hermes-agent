@@ -134,8 +134,8 @@ class CLIStatusBarMixin:
 
     def _handle_ai_usage_command(self, cmd_original: str) -> None:
         """``/ai-usage`` toggles, ``/ai-usage on|off|status`` sets, ``/ai-usage status``
-        reports the setting plus live ChatGPT/Grok remaining quotas. Persisted to
-        ``display.ai_usage``."""
+        reports the setting plus live ChatGPT/Grok remaining quotas and OpenRouter
+        credits. Persisted to ``display.ai_usage``."""
         from cli import save_config_value
         parts = (cmd_original or "").split()
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
@@ -144,14 +144,18 @@ class CLIStatusBarMixin:
             from agent.ai_usage import (
                 format_chatgpt,
                 format_grok,
+                format_openrouter,
                 read_chatgpt_usage,
                 read_grok_usage,
+                read_openrouter_credits,
             )
             _cgpt = read_chatgpt_usage(use_cache=False)
             _grok = read_grok_usage(use_cache=False)
+            _or = read_openrouter_credits(use_cache=False)
             _detail = (
                 f" — ChatGPT {format_chatgpt(_cgpt) or 'n/a'},"
-                f" Grok {format_grok(_grok) or 'n/a'}"
+                f" Grok {format_grok(_grok) or 'n/a'},"
+                f" OpenRouter {format_openrouter(_or) or 'n/a'}"
             )
         except Exception:
             _detail = ""
@@ -310,6 +314,8 @@ class CLIStatusBarMixin:
             "chatgpt_category": "dim",
             "grok_label": "",
             "grok_category": "dim",
+            "openrouter_label": "",
+            "openrouter_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "goal_active": False,
             "goal_turns_used": 0,
@@ -345,16 +351,19 @@ class CLIStatusBarMixin:
             except Exception:
                 pass
 
-        # ChatGPT/Grok remaining quotas are memoised inside agent.ai_usage
-        # (~30s TTL), so per-repaint polling is cheap. Fails open: offline or
-        # missing tokens just hide the segments.
+        # ChatGPT/Grok remaining quotas and OpenRouter credits are memoised
+        # inside agent.ai_usage (~10min TTL), so per-repaint polling is cheap.
+        # Fails open: offline or missing tokens just hide the segments.
         if getattr(self, "_ai_usage_visible", False):
             try:
                 from agent.ai_usage import (
+                    credits_category,
                     format_chatgpt,
                     format_grok,
+                    format_openrouter,
                     read_chatgpt_usage,
                     read_grok_usage,
+                    read_openrouter_credits,
                     usage_category,
                 )
 
@@ -364,6 +373,9 @@ class CLIStatusBarMixin:
                 _grok = read_grok_usage()
                 snapshot["grok_label"] = format_grok(_grok)
                 snapshot["grok_category"] = usage_category(_grok)
+                _or = read_openrouter_credits()
+                snapshot["openrouter_label"] = format_openrouter(_or)
+                snapshot["openrouter_category"] = credits_category(_or)
             except Exception:
                 pass
 
@@ -1085,9 +1097,9 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, gpu, chatgpt, grok, title, total_tokens (opt-in only).
-        gpu/chatgpt/grok render as a pinned VRAM + quota cluster at the END of the bar; other
-        fields keep their fixed order. The
+        focus, yolo, stash, battery, gpu, chatgpt, grok, openrouter, title, total_tokens
+        (opt-in only). gpu/chatgpt/grok/openrouter render as a pinned VRAM + quota
+        cluster at the END of the bar; other fields keep their fixed order. The
         config controls visibility only.
         """
         from cli import CLI_CONFIG
@@ -1208,13 +1220,15 @@ class CLIStatusBarMixin:
                              if field_set is None or "chatgpt" in field_set else "")
             grok_label = (snapshot.get("grok_label") or ""
                           if field_set is None or "grok" in field_set else "")
+            openrouter_label = (snapshot.get("openrouter_label") or ""
+                                if field_set is None or "openrouter" in field_set else "")
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
             parts = ["".join(t for _, t in seg) for seg in segs] or [f"⚕ {model_short}"]
-            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51%.
-            # Battery stays pinned first.
-            for tail_label in (gpu_label, chatgpt_label, grok_label):
+            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51% │ 8,49$.
+            # Battery stays pinned first. OpenRouter remaining credits are last.
+            for tail_label in (gpu_label, chatgpt_label, grok_label, openrouter_label):
                 if tail_label:
                     parts.append(tail_label)
             if battery_label:
@@ -1266,8 +1280,8 @@ class CLIStatusBarMixin:
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
                 frags[0:0] = [(_SB, " "), (battery_style, battery_label), (_DIM, " │")]
-            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51%.
-            # Insert before the one-cell right margin.
+            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51% │ 8,49$.
+            # Insert before the one-cell right margin. OpenRouter is last.
             tail_segs = []
             gpu_label = snapshot.get("gpu_label") or ""
             if gpu_label and _ok("gpu"):
@@ -1282,6 +1296,11 @@ class CLIStatusBarMixin:
             if grok_label and _ok("grok"):
                 tail_segs.append(
                     (self._gpu_status_style(snapshot.get("grok_category", "dim")), grok_label))
+            openrouter_label = snapshot.get("openrouter_label") or ""
+            if openrouter_label and _ok("openrouter"):
+                tail_segs.append(
+                    (self._gpu_status_style(snapshot.get("openrouter_category", "dim")),
+                     openrouter_label))
             if tail_segs:
                 tail_frags: list = []
                 for style, text in tail_segs:

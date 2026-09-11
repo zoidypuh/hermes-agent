@@ -1,32 +1,20 @@
 """GPU VRAM read-out for the CLI/TUI status bar.
 
-Queries the first NVIDIA GPU through ``nvidia-smi`` and exposes a compact,
-colour-coded label (``GPU 18.8/32.0G``). Everything degrades to "unavailable"
-(no GPU / read failure) so callers can render unconditionally. Like
-:mod:`agent.battery`, :func:`read_gpu` memoises the reading — the status bar
-repaints constantly, and a subprocess per repaint would be wasteful.
-
-Only discrete NVIDIA GPUs via ``nvidia-smi`` are supported (the path lookup
-covers PATH, the WSL ``/usr/lib/wsl/lib`` shim, and the Windows driver dirs,
-mirroring ``hermes_cli.local_runtime.hardware``). Multi-GPU hosts report
-device 0 only.
+Reads the local Usage API over Tailscale Magic DNS
+(``http://winpc-2.tailed34e0.ts.net:8769/api/usage``). Missing / offline
+readings stay unavailable so the footer can hide the segment.
 """
 
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 
 @dataclass(frozen=True)
 class GpuStatus:
-    """One reading: MiB values straight from ``nvidia-smi``; ``name`` is informational."""
+    """One reading: MiB values from the Usage API; ``name`` is informational."""
 
     available: bool
     used_mib: Optional[int] = None
@@ -56,55 +44,26 @@ _LEVEL_CATEGORIES = ((95, CATEGORY_CRITICAL), (80, CATEGORY_BAD), (50, CATEGORY_
 _CACHE_TTL_SECONDS = 2.0
 _cache: Optional[tuple[float, GpuStatus]] = None
 
-# The driver doesn't move mid-process; the PATH lookup happens once.
-_smi_path_cache: "tuple[str | None] | None" = None
 
-
-def _nvidia_smi_path() -> Optional[str]:
-    """Absolute path to nvidia-smi, or None. PATH first, then known install spots."""
-    global _smi_path_cache
-    if _smi_path_cache is not None:
-        return _smi_path_cache[0]
-    found = shutil.which("nvidia-smi")
-    if found is None and os.name == "nt":
-        windir = os.environ.get("SystemRoot", r"C:\Windows")
-        candidates = (
-            Path(windir) / "System32" / "nvidia-smi.exe",
-            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
-            / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe",
-        )
-        found = next((str(c) for c in candidates if c.exists()), None)
-    elif found is None and sys.platform.startswith("linux"):
-        candidate = Path("/usr/lib/wsl/lib/nvidia-smi")
-        if candidate.exists():
-            found = str(candidate)
-    _smi_path_cache = (found,)
-    return found
-
-
-def _read_gpu_uncached() -> GpuStatus:
-    exe = _nvidia_smi_path()
-    if exe is None:
-        return UNAVAILABLE
+def _read_gpu_uncached(use_cache: bool = True) -> GpuStatus:
     try:
-        out = subprocess.run(
-            [exe, "--query-gpu=memory.used,memory.total,name",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+        from agent.usage_api import fetch_usage
+        payload = fetch_usage(use_cache=use_cache)
     except Exception:
         return UNAVAILABLE
-    if out.returncode != 0 or not (out.stdout or "").strip():
+    gpu = (payload or {}).get("gpu") if isinstance(payload, dict) else None
+    if not isinstance(gpu, dict) or gpu.get("online") is False:
         return UNAVAILABLE
+    used_gb = gpu.get("gpuUsedGb")
+    total_gb = gpu.get("gpuTotalGb")
     try:
-        first = out.stdout.strip().splitlines()[0]
-        used_s, total_s, name = [p.strip() for p in first.split(",", 2)]
-        used, total = int(float(used_s)), int(float(total_s))
-        if total <= 0 or used < 0:
-            return UNAVAILABLE
-        return GpuStatus(available=True, used_mib=used, total_mib=total,
-                         name=name or None)
-    except (ValueError, IndexError):
+        used_mib = int(round(float(used_gb) * 1024))
+        total_mib = int(round(float(total_gb) * 1024))
+    except (TypeError, ValueError):
         return UNAVAILABLE
+    if total_mib <= 0 or used_mib < 0:
+        return UNAVAILABLE
+    return GpuStatus(available=True, used_mib=used_mib, total_mib=total_mib, name="GPU")
 
 
 def read_gpu(use_cache: bool = True) -> GpuStatus:
@@ -112,7 +71,7 @@ def read_gpu(use_cache: bool = True) -> GpuStatus:
     global _cache
     if use_cache and _cache is not None and time.monotonic() - _cache[0] < _CACHE_TTL_SECONDS:
         return _cache[1]
-    status = _read_gpu_uncached()
+    status = _read_gpu_uncached(use_cache=use_cache)
     _cache = (time.monotonic(), status)
     return status
 

@@ -1,7 +1,5 @@
 """Unit tests for agent.gpu (status-bar VRAM read-out)."""
 
-import sys
-import types
 from unittest.mock import patch
 
 from agent.gpu import (
@@ -25,7 +23,7 @@ def setup_function(_fn):
 
 
 def test_format_gpu_gib_one_decimal():
-    assert format_gpu(_make_status()) == "GPU 19.0/31.8G"
+    assert format_gpu(_make_status()) == "19.0/31.8G"
 
 
 def test_format_gpu_empty_when_unavailable():
@@ -41,43 +39,29 @@ def test_gpu_category_hot_first():
     assert gpu_category(GpuStatus(available=False)) == "dim"
 
 
-def test_read_gpu_parses_first_gpu():
-    import agent.gpu as gpu_mod
-
-    class _Out:
-        returncode = 0
-        stdout = "19442, 32607, NVIDIA GeForce RTX 5090\n100, 200, Other\n"
-
-    with patch.object(gpu_mod, "_nvidia_smi_path", return_value="/usr/bin/nvidia-smi"), \
-            patch("subprocess.run", return_value=_Out()):
+def test_read_gpu_from_usage_api():
+    payload = {"gpu": {"online": True, "gpuUsedGb": 19.0, "gpuTotalGb": 31.84375}}
+    with patch("agent.usage_api.fetch_usage", return_value=payload):
         st = read_gpu(use_cache=False)
     assert st.available is True
-    assert (st.used_mib, st.total_mib) == (19442, 32607)
-    assert st.name == "NVIDIA GeForce RTX 5090"
+    assert (st.used_mib, st.total_mib) == (19456, 32608)
 
 
-def test_read_gpu_fails_open_without_smi():
-    import agent.gpu as gpu_mod
-
-    with patch.object(gpu_mod, "_nvidia_smi_path", return_value=None):
+def test_read_gpu_hides_when_api_offline():
+    with patch("agent.usage_api.fetch_usage", return_value=None):
         assert read_gpu(use_cache=False).available is False
+    with patch("agent.usage_api.fetch_usage", return_value={"gpu": {"online": False}}):
+        assert format_gpu(read_gpu(use_cache=False)) == ""
 
 
 def test_read_gpu_caches():
-    import agent.gpu as gpu_mod
+    calls = []
 
-    calls: list = []
-
-    class _Out:
-        returncode = 0
-        stdout = "100, 1000, GPU\n"
-
-    def fake_run(*a, **k):
+    def fake_fetch(*_a, **_k):
         calls.append(1)
-        return _Out()
+        return {"gpu": {"online": True, "gpuUsedGb": 1.0, "gpuTotalGb": 32.0}}
 
-    with patch.object(gpu_mod, "_nvidia_smi_path", return_value="/usr/bin/nvidia-smi"), \
-            patch("subprocess.run", side_effect=fake_run):
+    with patch("agent.usage_api.fetch_usage", side_effect=fake_fetch):
         read_gpu(use_cache=True)
         read_gpu(use_cache=True)
     assert len(calls) == 1

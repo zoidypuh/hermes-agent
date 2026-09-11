@@ -166,7 +166,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("gpu", "Toggle a color-coded GPU VRAM indicator in the status bar",
                "Configuration", cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
-    CommandDef("ai-usage", "Toggle ChatGPT/Grok remaining quotas at the end of the status bar",
+    CommandDef("ai-usage", "Toggle ChatGPT/Grok quotas and OpenRouter credits at the end of the status bar",
                "Configuration", cli_only=True, args_hint="[on|off|status]",
                subcommands=("on", "off", "status")),
     CommandDef("timestamps", "Toggle [HH:MM] timestamps on messages and /history", "Configuration",
