@@ -1118,7 +1118,13 @@ class CLIStatusBarMixin:
             status_bar = (display or {}).get("status_bar") if isinstance(display, dict) else None
             fields = status_bar.get("fields") if isinstance(status_bar, dict) else None
             if isinstance(fields, list) and fields:
-                result = frozenset(str(f) for f in fields)
+                result = {str(f) for f in fields}
+                # Quota cluster is GPU + ChatGPT + Grok + OpenRouter. Older
+                # configs listed chatgpt/grok before openrouter existed; keep
+                # remaining credits visible without a manual fields edit.
+                if "openrouter" not in result and ("chatgpt" in result or "grok" in result):
+                    result.add("openrouter")
+                result = frozenset(result)
         except Exception:
             result = None
         self._status_bar_field_set_cache = result

@@ -622,6 +622,40 @@ class TestStatusBarFieldConfig:
         assert "8,49$" not in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_openrouter_implied_by_chatgpt_grok_fields(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._ai_usage_visible = True
+        fake = types.SimpleNamespace(
+            format_chatgpt=lambda _s: "75%",
+            format_grok=lambda _s: "51%",
+            format_openrouter=lambda _s: "8,49$",
+            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
+            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
+            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
+            usage_category=lambda _s: "good",
+            credits_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
+            with patch.object(
+                cli_mod,
+                "CLI_CONFIG",
+                {"display": {"status_bar": {"fields": ["model", "chatgpt", "grok"]}}},
+            ):
+                text = cli_obj._build_status_bar_text(width=160)
+        assert text.rstrip().endswith("8,49$")
+
     def test_ai_usage_omitted_when_api_has_no_data(self):
         import sys
         import types
