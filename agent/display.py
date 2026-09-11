@@ -917,6 +917,44 @@ def _trim_error(msg: str) -> str:
     return _tail_trunc(msg, _ERROR_SUFFIX_MAX_LEN)
 
 
+_WARN_RGB = (255, 167, 38)  # skin ``ui_warn`` default (#ffa726)
+
+
+def _warn_fg() -> str:
+    """Orange foreground for inline token-usage labels (skin ``ui_warn``, else amber)."""
+    try:
+        skin = _get_skin()
+        h = skin.get_color("ui_warn", "") if skin else ""
+        if h and len(h) == 7 and h[0] == "#":
+            return _fg(*_hex_rgb(h))
+    except Exception:
+        pass
+    return _fg(*_WARN_RGB)
+
+
+def _result_text_for_tokens(result: Any) -> str:
+    """Plain text whose size is the tool-result token cost shown on the completion line."""
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    from agent.tool_dispatch_helpers import _multimodal_text_summary
+    return _multimodal_text_summary(result)
+
+
+def _token_usage_suffix(result: Any) -> str:
+    """`` {orange}{compact-count}{reset}`` after duration / ``[exit N]``; empty when unknown."""
+    text = _result_text_for_tokens(result)
+    if not text:
+        return ""
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.usage_pricing import format_token_count_compact
+    tokens = estimate_tokens_rough(text)
+    if tokens <= 0:
+        return ""
+    return f" {_warn_fg()}{format_token_count_compact(tokens)}{_ANSI_RESET}"
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Return ``(is_failure, suffix)`` for a tool result, e.g. ``(True, " [exit 1]")``."""
     if result is None or file_mutation_result_landed(tool_name, result):
@@ -1080,17 +1118,22 @@ _CUTE_LINES = {
 
 def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
     """Tool completion line for CLI quiet mode: ``| {emoji} {verb:9} {detail}  {duration}``, plus a
-    failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
+    failure suffix from :func:`_detect_tool_failure` and an orange tool-result token count;
+    the leading ``┊`` becomes the skin's tool prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     if _tool_preview_mode == "name_only":
         body = f"┊ {get_tool_emoji(tool_name)} {tool_name}"
         line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
-        return f"{line}{failure_suffix}" if is_failure else line
+        if is_failure:
+            line = f"{line}{failure_suffix}"
+        return f"{line}{_token_usage_suffix(result)}"
     render = _CUTE_LINES.get(tool_name)
     body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
     line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
-    return f"{line}{failure_suffix}" if is_failure else line
+    if is_failure:
+        line = f"{line}{failure_suffix}"
+    return f"{line}{_token_usage_suffix(result)}"
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:

@@ -7,6 +7,7 @@ not a generic "[error]".
 """
 
 import json
+import re
 
 from agent.display import (
     _detect_tool_failure,
@@ -117,5 +118,6 @@ class TestGetCuteToolMessageFailureSuffix:
     def test_success_has_no_suffix(self):
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
-        assert "[" not in line.split("0.2s", 1)[1]
+        after = re.sub(r"\033\[[0-9;]*m", "", line.split("0.2s", 1)[1])
+        assert "[" not in after
 
