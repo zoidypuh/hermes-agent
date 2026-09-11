@@ -596,7 +596,7 @@ def test_redirect_routing_snapshot_does_not_consume_later_pending_input(monkeypa
 @pytest.mark.parametrize("consumer", ["batch", "pre_api"])
 def test_tool_phase_redirect_rebinds_when_steer_is_consumed(monkeypatch, consumer):
     from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
-    from agent.turn_iteration_prep import _inject_steer_into_newest_tool_result
+    from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
     agent, old, callback, transport, *_ = _native(monkeypatch, agent_type=RedirectAgent)
     fresh = RecordingTransport()
     monkeypatch.setattr(switchboard_stream, "RelayHttpTransport", lambda: fresh)
@@ -610,11 +610,13 @@ def test_tool_phase_redirect_rebinds_when_steer_is_consumed(monkeypatch, consume
         if consumer == "batch":
             apply_pending_steer_to_tool_results(agent, messages, 1)
         else:
-            _inject_steer_into_newest_tool_result(agent, messages, agent._drain_pending_steer())
+            _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
         current = agent._switchboard_turn
         assert current is not old
-        assert latest in messages[0]["content"]
-        assert switchboard_turn._RUNTIME_NOTE in messages[0]["content"]
+        assert messages[0]["content"] == "Tool finished."
+        assert messages[-1]["role"] == "user"
+        assert latest in messages[-1]["content"]
+        assert switchboard_turn._RUNTIME_NOTE in messages[-1]["content"]
         agent._executing_tools = False
         final = "The finished tool result answers your newest correction. "
         agent._stream_callback(MARKER + final)
