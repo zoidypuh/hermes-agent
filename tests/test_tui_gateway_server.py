@@ -1763,6 +1763,61 @@ def test_config_set_battery_explicit_off(monkeypatch):
     assert writes == {"display.battery": False}
 
 
+def test_system_gpu_returns_reading(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.gpu",
+        types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=True, used_mib=19442, total_mib=32607,
+                name="NVIDIA GeForce RTX 5090",
+            ),
+            gpu_category=lambda _s: "warn",
+        ),
+    )
+
+    resp = server.dispatch({"id": "g1", "method": "system.gpu", "params": {}})
+
+    assert resp["result"] == {
+        "available": True,
+        "used_mib": 19442,
+        "total_mib": 32607,
+        "name": "NVIDIA GeForce RTX 5090",
+        "category": "warn",
+    }
+
+
+def test_system_gpu_fails_open(monkeypatch):
+    def boom():
+        raise RuntimeError("no nvidia-smi")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.gpu",
+        types.SimpleNamespace(read_gpu=boom, gpu_category=lambda _s: "dim"),
+    )
+
+    resp = server.dispatch({"id": "g2", "method": "system.gpu", "params": {}})
+
+    assert resp["result"]["available"] is False
+    assert resp["result"]["used_mib"] is None
+
+
+def test_config_set_gpu_toggles_and_persists(monkeypatch):
+    writes: dict[str, object] = {}
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"gpu": False}})
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda k, v: writes.__setitem__(k, v)
+    )
+
+    resp = server.dispatch(
+        {"id": "c3", "method": "config.set", "params": {"key": "gpu", "value": ""}}
+    )
+
+    assert resp["result"] == {"key": "gpu", "value": "on"}
+    assert writes == {"display.gpu": True}
+
+
 def test_voice_toggle_returns_configured_record_key(monkeypatch):
     monkeypatch.setattr(
         server,

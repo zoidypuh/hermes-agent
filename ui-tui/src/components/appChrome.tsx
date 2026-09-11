@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
+import type { BatteryInfo, GpuInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
@@ -243,6 +243,37 @@ function batteryColor(info: BatteryInfo, t: Theme): string {
 // Renders `--` for an unknown percent so a null can never surface as "null%".
 function batteryLabel(info: BatteryInfo): string {
   return `${info.plugged ? '⚡' : '🔋'} ${info.percent ?? '--'}%`
+}
+
+// Colour the GPU VRAM read-out by its (Python-computed) category. Hot-first:
+// an idle card is "good", a nearly-full one "critical".
+function gpuColor(info: GpuInfo, t: Theme): string {
+  if (info.category === 'good') {
+    return t.color.statusGood
+  }
+
+  if (info.category === 'warn') {
+    return t.color.statusWarn
+  }
+
+  if (info.category === 'bad') {
+    return t.color.statusBad
+  }
+
+  if (info.category === 'critical') {
+    return t.color.statusCritical
+  }
+
+  return t.color.muted
+}
+
+// Compact GPU label: `GPU 19.0/31.8G` in GiB with one decimal. Renders `--`
+// for unknown halves so a null can never surface as "nullG".
+function gpuLabel(info: GpuInfo): string {
+  const used = info.used_mib != null ? `${(info.used_mib / 1024).toFixed(1)}` : '--'
+  const total = info.total_mib != null ? `${(info.total_mib / 1024).toFixed(1)}` : '--'
+
+  return `GPU ${used}/${total}G`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its
@@ -485,6 +516,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 
 export function StatusRule({
   battery,
+  gpu,
   focusView,
   cwdLabel,
   cols,
@@ -539,6 +571,13 @@ export function StatusRule({
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
+  // GPU VRAM read-out — pinned right after the battery when enabled.
+  const showGpu =
+    !!gpu && gpu.available && gpu.used_mib != null && gpu.total_mib != null && ok('gpu')
+
+  const gpuText = showGpu ? gpuLabel(gpu!) : ''
+  const gpuColorVal = showGpu ? gpuColor(gpu!, t) : ''
+  const gpuWidth = showGpu ? stringWidth(`${gpuText} │ `) : 0
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
   // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
@@ -565,6 +604,7 @@ export function StatusRule({
   const essentialWidth =
     stringWidth('─ ') +
     batteryWidth +
+    gpuWidth +
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
@@ -677,6 +717,12 @@ export function StatusRule({
           {showBattery ? (
             <Text color={batteryColorVal}>
               {batteryText}
+              <Text color={t.color.muted}>{' │ '}</Text>
+            </Text>
+          ) : null}
+          {showGpu ? (
+            <Text color={gpuColorVal}>
+              {gpuText}
               <Text color={t.color.muted}>{' │ '}</Text>
             </Text>
           ) : null}
@@ -932,6 +978,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   battery?: BatteryInfo | null
+  gpu?: GpuInfo | null
   // Focus view (/focus) badge — display-only reduced-output indicator.
   focusView?: boolean
   bgCount: number

@@ -500,6 +500,168 @@ class TestStatusBarFieldConfig:
         assert "12.4K/200K" in text
         assert "🗜️" in text
 
+    def test_gpu_only(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._gpu_visible = True
+        fake = types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=True, used_mib=19442, total_mib=32607,
+                name="NVIDIA GeForce RTX 5090",
+            ),
+            format_gpu=lambda _s: "GPU 19.0/31.8G",
+            gpu_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.gpu": fake}):
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "gpu"]}}}):
+                text = cli_obj._build_status_bar_text(width=120)
+        assert "GPU 19.0/31.8G" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_gpu_hidden_by_field_filter(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._gpu_visible = True
+        fake = types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=True, used_mib=19442, total_mib=32607,
+                name="NVIDIA GeForce RTX 5090",
+            ),
+            format_gpu=lambda _s: "GPU 19.0/31.8G",
+            gpu_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.gpu": fake}):
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
+                text = cli_obj._build_status_bar_text(width=120)
+        assert "GPU 19.0/31.8G" not in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_openrouter_credits_pinned_at_end(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._ai_usage_visible = True
+        fake = types.SimpleNamespace(
+            format_chatgpt=lambda _s: "75%",
+            format_grok=lambda _s: "51%",
+            format_openrouter=lambda _s: "8,49$",
+            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
+            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
+            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
+            usage_category=lambda _s: "good",
+            credits_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
+            text = cli_obj._build_status_bar_text(width=160)
+        assert text.rstrip().endswith("8,49$")
+        chatgpt_pos = text.find("75%")
+        grok_pos = text.find("51%")
+        or_pos = text.find("8,49$")
+        assert 0 <= chatgpt_pos < grok_pos < or_pos
+
+    def test_openrouter_hidden_by_field_filter(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._ai_usage_visible = True
+        fake = types.SimpleNamespace(
+            format_chatgpt=lambda _s: "75%",
+            format_grok=lambda _s: "51%",
+            format_openrouter=lambda _s: "8,49$",
+            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
+            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
+            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
+            usage_category=lambda _s: "good",
+            credits_category=lambda _s: "warn",
+        )
+        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
+            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
+                text = cli_obj._build_status_bar_text(width=160)
+        assert "8,49$" not in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_ai_usage_omitted_when_api_has_no_data(self):
+        import sys
+        import types
+
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._ai_usage_visible = True
+        cli_obj._gpu_visible = True
+        fake_usage = types.SimpleNamespace(
+            format_chatgpt=lambda _s: "",
+            format_grok=lambda _s: "",
+            format_openrouter=lambda _s: "",
+            read_chatgpt_usage=lambda: types.SimpleNamespace(available=False, remaining=None),
+            read_grok_usage=lambda: types.SimpleNamespace(available=False, remaining=None),
+            read_openrouter_credits=lambda: types.SimpleNamespace(available=False, remaining=None),
+            usage_category=lambda _s: "dim",
+            credits_category=lambda _s: "dim",
+        )
+        fake_gpu = types.SimpleNamespace(
+            read_gpu=lambda: types.SimpleNamespace(
+                available=False, used_mib=None, total_mib=None, name=None,
+            ),
+            format_gpu=lambda _s: "",
+            gpu_category=lambda _s: "dim",
+        )
+        with patch.dict(sys.modules, {"agent.ai_usage": fake_usage, "agent.gpu": fake_gpu}):
+            text = cli_obj._build_status_bar_text(width=160)
+        assert "8,49$" not in text
+        assert "75%" not in text
+        assert "GPU" not in text
+        assert "claude-sonnet-4-20250514" in text
+
     def test_field_set_is_cached_per_instance(self):
         cli_obj = _make_cli()
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):

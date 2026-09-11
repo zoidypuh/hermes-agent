@@ -60,6 +60,7 @@ import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
+import { useGpuPoll } from './useGpuPoll.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
@@ -581,6 +582,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
+  useGpuPoll(gw)
 
   useEffect(() => {
     if (!ui.sid) {
