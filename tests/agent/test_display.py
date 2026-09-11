@@ -48,7 +48,7 @@ def _strip_ansi(text: str) -> str:
 def _expected_token_label(result: str) -> str:
     from agent.model_metadata import estimate_tokens_rough
     from agent.usage_pricing import format_token_count_compact
-    return format_token_count_compact(estimate_tokens_rough(result))
+    return f"{format_token_count_compact(estimate_tokens_rough(result))} tok"
 
 
 def test_token_usage_follows_duration_in_orange():

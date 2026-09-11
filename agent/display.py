@@ -943,7 +943,7 @@ def _result_text_for_tokens(result: Any) -> str:
 
 
 def _token_usage_suffix(result: Any) -> str:
-    """`` {orange}{compact-count}{reset}`` after duration / ``[exit N]``; empty when unknown."""
+    """`` {orange}{compact-count} tok{reset}`` after duration / ``[exit N]``; empty when unknown."""
     text = _result_text_for_tokens(result)
     if not text:
         return ""
@@ -952,7 +952,7 @@ def _token_usage_suffix(result: Any) -> str:
     tokens = estimate_tokens_rough(text)
     if tokens <= 0:
         return ""
-    return f" {_warn_fg()}{format_token_count_compact(tokens)}{_ANSI_RESET}"
+    return f" {_warn_fg()}{format_token_count_compact(tokens)} tok{_ANSI_RESET}"
 
 
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
