@@ -8,7 +8,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import type { BatteryCategory, GpuInfo } from './interfaces.js'
 import { $uiState, patchUiState } from './uiStore.js'
 
-const GPU_POLL_MS = 5_000
+const GPU_POLL_MS = 30_000
 
 const CATEGORIES: ReadonlySet<BatteryCategory> = new Set(['bad', 'critical', 'dim', 'good', 'warn'])
 
@@ -37,8 +37,8 @@ export const toGpuInfo = (r: null | SystemGpuResponse): GpuInfo | null => {
  * Poll host GPU VRAM while the status-bar indicator is enabled.
  *
  * Mirrors useBatteryPoll: system property, no `sid` gate, Python memoises the
- * read (2s TTL) so a 5s cadence keeps the read-out live without churn. VRAM
- * moves fast under ComfyUI — hence quicker than the 30s battery cadence.
+ * read (30s TTL). A 30s cadence is plenty for the footer; failed polls keep
+ * the last good reading so the segment does not disappear.
  */
 export function useGpuPoll(gw: GatewayClient) {
   const enabled = useStore($uiState).gpu
@@ -57,7 +57,10 @@ export function useGpuPoll(gw: GatewayClient) {
         const r = asRpcResult<SystemGpuResponse>(await gw.request<SystemGpuResponse>('system.gpu', {}))
 
         if (!cancelled) {
-          patchUiState({ gpuStatus: toGpuInfo(r) })
+          const info = toGpuInfo(r)
+          if (info?.available && info.used_mib != null && info.total_mib != null) {
+            patchUiState({ gpuStatus: info })
+          }
         }
       } catch {
         // Keep the last-good reading on a transient RPC failure.

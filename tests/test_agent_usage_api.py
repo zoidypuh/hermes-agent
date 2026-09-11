@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from agent.usage_api import DEFAULT_URL, clear_cache, fetch_usage, usage_api_url, usage_api_urls
+from agent.usage_api import DEFAULT_URL, clear_cache, fetch_gpu, fetch_usage, usage_api_url, usage_api_urls
 
 
 def setup_function(_fn):
@@ -30,7 +30,7 @@ def test_fetch_usage_fails_open():
 def test_fetch_usage_caches():
     calls = []
 
-    def fake_get(_url):
+    def fake_get(_url, *_args, **_kwargs):
         calls.append(1)
         return {"openrouter": {"online": True, "remainingCredits": 8.49}}
 
@@ -53,3 +53,22 @@ def test_default_url_is_tailscale_magic_dns():
 def test_usage_api_url_override():
     with patch.dict("os.environ", {"USAGE_API_URL": "http://example.ts.net:8769/"}):
         assert usage_api_url() == "http://example.ts.net:8769"
+
+
+def test_fetch_gpu_uses_gpu_endpoint():
+    payload = {"name": "gpu", "online": True, "gpuUsedGb": 4.2, "gpuTotalGb": 32.0}
+    with patch("agent.usage_api.usage_api_url", return_value="http://winpc-2.tailed34e0.ts.net:8769"), \
+            patch("agent.usage_api._get_json", return_value=payload) as get_json:
+        assert fetch_gpu(use_cache=False) == payload
+        get_json.assert_called_once()
+        assert get_json.call_args.args[0].endswith("/api/gpu")
+
+
+def test_fetch_gpu_keeps_last_good_on_failure():
+    payload = {"name": "gpu", "online": True, "gpuUsedGb": 4.2, "gpuTotalGb": 32.0}
+    with patch("agent.usage_api.usage_api_url", return_value="http://winpc-2.tailed34e0.ts.net:8769"), \
+            patch("agent.usage_api._get_json", return_value=payload):
+        assert fetch_gpu(use_cache=False) == payload
+    with patch("agent.usage_api.usage_api_url", return_value="http://winpc-2.tailed34e0.ts.net:8769"), \
+            patch("agent.usage_api._get_json", side_effect=OSError("down")):
+        assert fetch_gpu(use_cache=False) == payload

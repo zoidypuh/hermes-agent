@@ -1,8 +1,8 @@
 """GPU VRAM read-out for the CLI/TUI status bar.
 
 Reads the local Usage API over Tailscale Magic DNS
-(``http://winpc-2.tailed34e0.ts.net:8769/api/usage``). Missing / offline
-readings stay unavailable so the footer can hide the segment.
+(``http://winpc-2.tailed34e0.ts.net:8769/api/gpu``). Transient fetch
+failures keep the last good reading so the footer does not flicker.
 """
 
 from __future__ import annotations
@@ -41,17 +41,28 @@ CATEGORY_DIM = "dim"
 # (lower bound inclusive, category); first match wins, evaluated hot-first.
 _LEVEL_CATEGORIES = ((95, CATEGORY_CRITICAL), (80, CATEGORY_BAD), (50, CATEGORY_WARN))
 
-_CACHE_TTL_SECONDS = 2.0
+_CACHE_TTL_SECONDS = 30.0
 _cache: Optional[tuple[float, GpuStatus]] = None
 
 
-def _read_gpu_uncached(use_cache: bool = True) -> GpuStatus:
+def _gpu_section(payload) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("name") == "gpu" or "gpuUsedGb" in payload:
+        return payload
+    section = payload.get("gpu")
+    return section if isinstance(section, dict) else None
+
+
+def _read_gpu_uncached(use_cache: bool = True) -> Optional[GpuStatus]:
     try:
-        from agent.usage_api import fetch_usage
-        payload = fetch_usage(use_cache=use_cache)
+        from agent.usage_api import fetch_gpu
+        payload = fetch_gpu(use_cache=use_cache)
     except Exception:
-        return UNAVAILABLE
-    gpu = (payload or {}).get("gpu") if isinstance(payload, dict) else None
+        return None
+    if payload is None:
+        return None
+    gpu = _gpu_section(payload)
     if not isinstance(gpu, dict) or gpu.get("online") is False:
         return UNAVAILABLE
     used_gb = gpu.get("gpuUsedGb")
@@ -67,12 +78,17 @@ def _read_gpu_uncached(use_cache: bool = True) -> GpuStatus:
 
 
 def read_gpu(use_cache: bool = True) -> GpuStatus:
-    """Return the current GPU VRAM status (cached for a couple of seconds)."""
+    """Return the current GPU VRAM status (cached for 30 seconds)."""
     global _cache
-    if use_cache and _cache is not None and time.monotonic() - _cache[0] < _CACHE_TTL_SECONDS:
+    now = time.monotonic()
+    if use_cache and _cache is not None and now - _cache[0] < _CACHE_TTL_SECONDS:
         return _cache[1]
     status = _read_gpu_uncached(use_cache=use_cache)
-    _cache = (time.monotonic(), status)
+    if status is None:
+        if _cache is not None and _cache[1].available:
+            return _cache[1]
+        status = UNAVAILABLE
+    _cache = (now, status)
     return status
 
 
