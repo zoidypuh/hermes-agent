@@ -510,6 +510,7 @@ def _init_logging_and_display_from_config() -> None:
         lambda: _im("hermes_cli.config").print_config_warnings(),
         lambda: _im("hermes_cli.skin_engine").init_skin_from_config(CLI_CONFIG),
         lambda: _im("agent.display").set_tool_preview_max_len(int(_display("tool_preview_length", 0) or 0)),
+        lambda: _im("agent.display").set_tool_preview_mode(str(_display("tool_preview_mode", "preview"))),
         lambda: _im("agent.display").set_friendly_tool_labels(bool(_display("friendly_tool_labels", True))),
     ):
         try:

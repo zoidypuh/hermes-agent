@@ -852,6 +852,7 @@ DEFAULT_CONFIG = {
         # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
         # still honored at runtime and folded into platforms by migration.
         "tool_preview_length": 0,  # max chars for tool call previews (0 = no limit)
+        "tool_preview_mode": "preview",  # preview | name_only
         # Human-phrased status labels for built-in tools ("Reading <file>") in CLI spinner and
         # gateway/desktop tool-progress; custom/plugin/MCP tools use the raw preview.
         "friendly_tool_labels": True,

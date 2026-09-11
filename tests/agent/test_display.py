@@ -13,6 +13,7 @@ from agent.display import (
     prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
+    set_tool_preview_mode,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -22,8 +23,21 @@ from agent.display import (
 @pytest.fixture(autouse=True)
 def reset_tool_preview_max_len():
     set_tool_preview_max_len(0)
+    set_tool_preview_mode("preview")
     yield
     set_tool_preview_max_len(0)
+    set_tool_preview_mode("preview")
+
+
+def test_name_only_mode_hides_tool_arguments_in_progress_and_completion():
+    secret_command = "python3 -c 'print(12345)'"
+    set_tool_preview_mode("name_only")
+
+    assert display_module.build_tool_preview("terminal", {"command": secret_command}) is None
+    line = get_cute_tool_message("terminal", {"command": secret_command}, 3.0)
+    assert "terminal" in line
+    assert "python3" not in line
+    assert "12345" not in line
 
 
 def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):

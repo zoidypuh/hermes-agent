@@ -112,6 +112,7 @@ class LocalEditSnapshot:
 
 # Configurable tool preview length; set once at startup from display.tool_preview_length.
 _tool_preview_max_len: int = 0  # 0 = unlimited
+_tool_preview_mode: str = "preview"
 _friendly_tool_labels: bool = True
 
 
@@ -124,6 +125,18 @@ def set_tool_preview_max_len(n: int) -> None:
 def get_tool_preview_max_len() -> int:
     """Return the configured max preview length (0 = unlimited)."""
     return _tool_preview_max_len
+
+
+def set_tool_preview_mode(mode: str) -> None:
+    """Choose whether tool activity includes argument previews or only tool names."""
+    global _tool_preview_mode
+    normalized = str(mode or "preview").strip().lower()
+    _tool_preview_mode = normalized if normalized in {"preview", "name_only"} else "preview"
+
+
+def get_tool_preview_mode() -> str:
+    """Return the configured tool activity rendering mode."""
+    return _tool_preview_mode
 
 
 def set_friendly_tool_labels(enabled: bool) -> None:
@@ -455,6 +468,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
 
     *max_len* ``None`` defers to the global ``_tool_preview_max_len``; ``0`` means unlimited.
     """
+    if _tool_preview_mode == "name_only":
+        return None
     if max_len is None:
         max_len = _tool_preview_max_len
     if not args:
@@ -1068,6 +1083,10 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     failure suffix from :func:`_detect_tool_failure`; the leading ``┊`` becomes the skin's tool prefix."""
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
+    if _tool_preview_mode == "name_only":
+        body = f"┊ {get_tool_emoji(tool_name)} {tool_name}"
+        line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
+        return f"{line}{failure_suffix}" if is_failure else line
     render = _CUTE_LINES.get(tool_name)
     body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
     line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
