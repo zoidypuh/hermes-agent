@@ -27,6 +27,7 @@ from agent.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     redact_tool_args_for_display as _redact_tool_args_for_display,
+    reset_tool_token_total as _reset_tool_token_total,
     _detect_tool_failure,
 )
 from agent.message_sanitization import coalesce_tool_call_id
@@ -1409,6 +1410,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
     segmented dispatcher owns turn-end work)."""
+    if finalize:
+        try:
+            _reset_tool_token_total()
+        except Exception:
+            pass
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
@@ -1667,6 +1673,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
     owns turn-end work)."""
+    if finalize:
+        try:
+            _reset_tool_token_total()
+        except Exception:
+            pass
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
 
@@ -1726,6 +1737,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     boundaries exactly as fully-sequential execution. Turn-end work (budget + /steer) runs
     once here (segments run with ``finalize=False``); each segment executor checks the
     interrupt flag up front, so an interrupt drains later segments with one result per call."""
+    try:
+        _reset_tool_token_total()
+    except Exception:
+        pass
     from types import SimpleNamespace
 
     if segments is None:

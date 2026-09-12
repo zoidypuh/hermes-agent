@@ -932,6 +932,48 @@ def _warn_fg() -> str:
     return _fg(*_WARN_RGB)
 
 
+_ERROR_RGB = (239, 83, 80)  # skin ``ui_error`` default (#ef5350)
+
+
+def _error_fg() -> str:
+    """Red foreground for the running token-total line (skin ``ui_error``, else red)."""
+    try:
+        skin = _get_skin()
+        h = skin.get_color("ui_error", "") if skin else ""
+        if h and len(h) == 7 and h[0] == "#":
+            return _fg(*_hex_rgb(h))
+    except Exception:
+        pass
+    return _fg(*_ERROR_RGB)
+
+
+_tool_token_total = 0
+
+
+def reset_tool_token_total() -> None:
+    """Zero the running tool-result token total (called once per tool batch)."""
+    global _tool_token_total
+    _tool_token_total = 0
+
+
+def add_tool_result_tokens(result: Any) -> int:
+    """Add one tool result's token estimate to the running total; return the new total."""
+    global _tool_token_total
+    try:
+        from agent.model_metadata import estimate_tokens_rough
+        _tool_token_total += max(estimate_tokens_rough(_result_text_for_tokens(result)), 0)
+    except Exception:
+        pass
+    return _tool_token_total
+
+
+def tool_token_total_line(total: int | None = None) -> str:
+    """Red ``∑ {compact} tok total`` line printed under each tool completion line."""
+    from agent.usage_pricing import format_token_count_compact
+    value = _tool_token_total if total is None else total
+    return f"{get_skin_tool_prefix()} {_error_fg()}∑ {format_token_count_compact(value)} tok total{_ANSI_RESET}"
+
+
 def _result_text_for_tokens(result: Any) -> str:
     """Plain text whose size is the tool-result token cost shown on the completion line."""
     if result is None:
@@ -1127,13 +1169,15 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
         line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
         if is_failure:
             line = f"{line}{failure_suffix}"
-        return f"{line}{_token_usage_suffix(result)}"
+        total = add_tool_result_tokens(result)
+        return f"{line}{_token_usage_suffix(result)}\n  {tool_token_total_line(total)}"
     render = _CUTE_LINES.get(tool_name)
     body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
     line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
     if is_failure:
         line = f"{line}{failure_suffix}"
-    return f"{line}{_token_usage_suffix(result)}"
+    total = add_tool_result_tokens(result)
+    return f"{line}{_token_usage_suffix(result)}\n  {tool_token_total_line(total)}"
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:

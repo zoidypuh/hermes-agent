@@ -51,12 +51,36 @@ def _expected_token_label(result: str) -> str:
     return f"{format_token_count_compact(estimate_tokens_rough(result))} tok"
 
 
+def _expected_total_label(results: list[str]) -> str:
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.usage_pricing import format_token_count_compact
+    total = sum(estimate_tokens_rough(r) for r in results)
+    return f"∑ {format_token_count_compact(total)} tok total"
+
+
+def test_running_total_line_in_red_under_completion_line():
+    from agent.display import reset_tool_token_total
+    reset_tool_token_total()
+    first = json.dumps({"output": "hello world " * 50, "exit_code": 0})
+    second = json.dumps({"output": "boom " * 80, "exit_code": 0})
+    first_line = get_cute_tool_message("terminal", {"command": "echo hi"}, 1.2, result=first)
+    second_line = get_cute_tool_message("terminal", {"command": "echo yo"}, 0.4, result=second)
+
+    for line, seen in ((first_line, [first]), (second_line, [first, second])):
+        parts = line.splitlines()
+        assert len(parts) == 2
+        total_line = parts[1]
+        assert _strip_ansi(total_line).strip().endswith(_expected_total_label(seen))
+        assert "\033[38;2;239;83;80m" in total_line or "\033[38;2;" in total_line
+
+
 def test_token_usage_follows_duration_in_orange():
     result = json.dumps({"output": "hello world " * 50, "exit_code": 0})
     line = get_cute_tool_message("terminal", {"command": "echo hi"}, 1.2, result=result)
     label = _expected_token_label(result)
 
-    after_duration = line.split("1.2s", 1)[1]
+    first_line = line.splitlines()[0]
+    after_duration = first_line.split("1.2s", 1)[1]
     assert after_duration.startswith(" ")
     assert "\033[38;2;" in after_duration
     assert _strip_ansi(after_duration).strip() == label
@@ -68,7 +92,7 @@ def test_token_usage_follows_exit_suffix_in_orange():
     line = get_cute_tool_message("terminal", {"command": "false"}, 0.0, result=result)
     label = _expected_token_label(result)
 
-    plain = _strip_ansi(line)
+    plain = _strip_ansi(line.splitlines()[0])
     assert f"0.0s [exit 2] {label}" in plain
     assert "\033[38;2;" in line.split("[exit 2]", 1)[1]
 
@@ -78,7 +102,7 @@ def test_name_only_token_usage_follows_exit_suffix():
     result = json.dumps({"output": "boom " * 80, "exit_code": 2})
     line = get_cute_tool_message("terminal", {"command": "false"}, 0.0, result=result)
     label = _expected_token_label(result)
-    assert f"terminal  0.0s [exit 2] {label}" in _strip_ansi(line)
+    assert f"terminal  0.0s [exit 2] {label}" in _strip_ansi(line.splitlines()[0])
 
 
 def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
