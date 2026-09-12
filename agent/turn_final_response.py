@@ -242,6 +242,13 @@ def finish_text_response(
         )
 
     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+    try:
+        from agent.display import tool_token_total_line, turn_tool_token_total
+        _turn_tool_total = turn_tool_token_total(messages)
+        if _turn_tool_total > 0:
+            agent._safe_print(f"  {tool_token_total_line(_turn_tool_total)}")
+    except Exception:
+        pass
     if not agent.quiet_mode:
         agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
     return _verdict("break")

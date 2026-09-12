@@ -58,20 +58,27 @@ def _expected_total_label(results: list[str]) -> str:
     return f"∑ {format_token_count_compact(total)} tok total"
 
 
-def test_running_total_line_in_red_under_completion_line():
-    from agent.display import reset_tool_token_total
-    reset_tool_token_total()
+def test_completion_line_has_no_total_line():
     first = json.dumps({"output": "hello world " * 50, "exit_code": 0})
-    second = json.dumps({"output": "boom " * 80, "exit_code": 0})
     first_line = get_cute_tool_message("terminal", {"command": "echo hi"}, 1.2, result=first)
-    second_line = get_cute_tool_message("terminal", {"command": "echo yo"}, 0.4, result=second)
+    assert first_line.count("\n") == 0
+    assert "∑" not in _strip_ansi(first_line)
 
-    for line, seen in ((first_line, [first]), (second_line, [first, second])):
-        parts = line.splitlines()
-        assert len(parts) == 2
-        total_line = parts[1]
-        assert _strip_ansi(total_line).strip().endswith(_expected_total_label(seen))
-        assert "\033[38;2;239;83;80m" in total_line or "\033[38;2;" in total_line
+
+def test_turn_total_line_sums_all_calls():
+    import json as _json
+    from agent.display import tool_token_total_line, turn_tool_token_total
+    first = _json.dumps({"output": "hello world " * 50, "exit_code": 0})
+    second = _json.dumps({"output": "boom " * 80, "exit_code": 0})
+
+    messages = [
+        {"role": "tool", "content": first},
+        {"role": "tool", "content": second},
+    ]
+    total = turn_tool_token_total(messages)
+    total_line = tool_token_total_line(total)
+    assert _strip_ansi(total_line).strip().endswith(_expected_total_label([first, second]))
+    assert "\033[38;2;239;83;80m" in total_line or "\033[38;2;" in total_line
 
 
 def test_token_usage_follows_duration_in_orange():

@@ -947,31 +947,38 @@ def _error_fg() -> str:
     return _fg(*_ERROR_RGB)
 
 
-_tool_token_total = 0
+_tool_token_total = 0  # unused: per-turn totals derive from messages
+
+
+def _tool_result_token_count(result: Any) -> int:
+    """Token estimate for one tool result (never raises, never negative)."""
+    try:
+        from agent.model_metadata import estimate_tokens_rough
+        return max(estimate_tokens_rough(_result_text_for_tokens(result)), 0)
+    except Exception:
+        return 0
 
 
 def reset_tool_token_total() -> None:
-    """Zero the running tool-result token total (called once per tool batch)."""
-    global _tool_token_total
-    _tool_token_total = 0
+    """Compatibility no-op: per-turn totals now derive from messages (kept for tests)."""
 
 
-def add_tool_result_tokens(result: Any) -> int:
-    """Add one tool result's token estimate to the running total; return the new total."""
-    global _tool_token_total
+def turn_tool_token_total(messages: Any) -> int:
+    """Sum the token estimates of this turn's tool results (no display side effects)."""
+    total = 0
     try:
-        from agent.model_metadata import estimate_tokens_rough
-        _tool_token_total += max(estimate_tokens_rough(_result_text_for_tokens(result)), 0)
+        for _m in messages or []:
+            if isinstance(_m, dict) and _m.get("role") == "tool":
+                total += _tool_result_token_count(_m.get("content"))
     except Exception:
         pass
-    return _tool_token_total
+    return total
 
 
-def tool_token_total_line(total: int | None = None) -> str:
-    """Red ``∑ {compact} tok total`` line printed under each tool completion line."""
+def tool_token_total_line(total: int) -> str:
+    """Red ``∑ {compact} tok total`` line printed once per turn, before the answer."""
     from agent.usage_pricing import format_token_count_compact
-    value = _tool_token_total if total is None else total
-    return f"{get_skin_tool_prefix()} {_error_fg()}∑ {format_token_count_compact(value)} tok total{_ANSI_RESET}"
+    return f"{get_skin_tool_prefix()} {_error_fg()}∑ {format_token_count_compact(total)} tok total{_ANSI_RESET}"
 
 
 def _result_text_for_tokens(result: Any) -> str:
@@ -1169,15 +1176,13 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
         line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
         if is_failure:
             line = f"{line}{failure_suffix}"
-        total = add_tool_result_tokens(result)
-        return f"{line}{_token_usage_suffix(result)}\n  {tool_token_total_line(total)}"
+        return f"{line}{_token_usage_suffix(result)}"
     render = _CUTE_LINES.get(tool_name)
     body = render(args, result) if render else f"┊ ⚡ {tool_name[:9]:9} {_cute_trunc(build_tool_preview(tool_name, args) or '')}"
     line = f"{body}  {duration:.1f}s".replace("┊", get_skin_tool_prefix(), 1)
     if is_failure:
         line = f"{line}{failure_suffix}"
-    total = add_tool_result_tokens(result)
-    return f"{line}{_token_usage_suffix(result)}\n  {tool_token_total_line(total)}"
+    return f"{line}{_token_usage_suffix(result)}"
 
 
 def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
