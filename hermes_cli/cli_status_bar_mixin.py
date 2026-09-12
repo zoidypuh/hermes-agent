@@ -1245,6 +1245,7 @@ class CLIStatusBarMixin:
             for tail_label in (gpu_label, chatgpt_label, grok_label, openrouter_label):
                 if tail_label:
                     parts.append(tail_label)
+            # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
             if width < 52:
