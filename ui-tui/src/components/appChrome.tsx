@@ -573,8 +573,7 @@ export function StatusRule({
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
   // GPU VRAM read-out — pinned right after the battery when enabled.
-  const showGpu =
-    !!gpu && gpu.available && gpu.used_mib != null && gpu.total_mib != null && ok('gpu')
+  const showGpu = !!gpu && gpu.available && gpu.used_mib != null && gpu.total_mib != null && ok('gpu')
 
   const gpuText = showGpu ? gpuLabel(gpu!) : ''
   const gpuColorVal = showGpu ? gpuColor(gpu!, t) : ''
