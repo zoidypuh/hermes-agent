@@ -50,6 +50,7 @@ def finish_text_response(
     _preflight_compression_blocked: Any, codex_ack_continuations: Any,
     truncated_response_parts: Any, length_continue_retries: Any,
     _pending_verification_response: Any, _pending_verification_response_previewed: Any,
+    current_turn_user_idx: Any = None,
 ) -> FinalResponseVerdict:
     """Finish (or defer) a text-only assistant response in the original guard order. Every
     continuation path sets ``final_response = None`` so an acknowledgment never suppresses
@@ -244,7 +245,10 @@ def finish_text_response(
     _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
     try:
         from agent.display import tool_token_total_line, turn_tool_token_total
-        _turn_tool_total = turn_tool_token_total(messages)
+        from agent.turn_context import reanchor_current_turn_user_idx
+        if current_turn_user_idx is None:
+            current_turn_user_idx = reanchor_current_turn_user_idx(messages, user_message)
+        _turn_tool_total = turn_tool_token_total(messages, current_turn_user_idx)
         if _turn_tool_total > 0:
             agent._safe_print(f"  {tool_token_total_line(_turn_tool_total)}")
     except Exception:

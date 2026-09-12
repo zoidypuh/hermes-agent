@@ -963,11 +963,16 @@ def reset_tool_token_total() -> None:
     """Compatibility no-op: per-turn totals now derive from messages (kept for tests)."""
 
 
-def turn_tool_token_total(messages: Any) -> int:
-    """Sum the token estimates of this turn's tool results (no display side effects)."""
+def turn_tool_token_total(messages: Any, from_index: int = 0) -> int:
+    """Sum the token estimates of tool results at ``messages[from_index:]``.
+
+    ``from_index`` is the current turn's user-message index, so prior turns'
+    tool results never leak into this turn's red total. No display side effects.
+    """
     total = 0
     try:
-        for _m in messages or []:
+        start = max(int(from_index or 0), 0)
+        for _m in (messages or [])[start:]:
             if isinstance(_m, dict) and _m.get("role") == "tool":
                 total += _tool_result_token_count(_m.get("content"))
     except Exception:

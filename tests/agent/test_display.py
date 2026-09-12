@@ -75,10 +75,26 @@ def test_turn_total_line_sums_all_calls():
         {"role": "tool", "content": first},
         {"role": "tool", "content": second},
     ]
-    total = turn_tool_token_total(messages)
+    total = turn_tool_token_total(messages, 0)
     total_line = tool_token_total_line(total)
     assert _strip_ansi(total_line).strip().endswith(_expected_total_label([first, second]))
     assert "\033[38;2;239;83;80m" in total_line or "\033[38;2;" in total_line
+
+
+def test_turn_total_ignores_prior_turn_tool_results():
+    import json as _json
+    from agent.display import turn_tool_token_total
+    from agent.model_metadata import estimate_tokens_rough
+    stale = _json.dumps({"output": "stale " * 500, "exit_code": 0})
+    fresh = _json.dumps({"output": "fresh " * 50, "exit_code": 0})
+    messages = [
+        {"role": "user", "content": "old question"},
+        {"role": "tool", "content": stale},
+        {"role": "user", "content": "new question"},
+        {"role": "tool", "content": fresh},
+    ]
+    assert turn_tool_token_total(messages, 2) == estimate_tokens_rough(fresh)
+    assert turn_tool_token_total(messages, 0) > turn_tool_token_total(messages, 2)
 
 
 def test_token_usage_follows_duration_in_orange():
