@@ -35,6 +35,7 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
+  storedSid: null,
   statusBarFields: null,
   streaming: true,
   timestamps: false,
