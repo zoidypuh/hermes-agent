@@ -168,6 +168,8 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     merge(nested_gateway.get("platforms"))
     merge(yaml_cfg.get("platforms"))
     merge({k: v for k, v in nested_gateway.items() if k != "platforms" and isinstance(v, dict) and _is_platform_name(k)})
+    # Top-level ``whatsapp:`` / ``telegram:`` blocks, not only ``gateway.<platform>``.
+    merge({k: v for k, v in yaml_cfg.items() if isinstance(v, dict) and _is_platform_name(k)})
     return platforms_data
 
 
@@ -224,9 +226,9 @@ _SHARED_KEYS: tuple = (
 )
 
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
-    """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
-    never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with
-    the same typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
+    """Shared-key bridge. A root-level platform block also gets its adapter keys
+    (including WhatsApp ``bridge_port``) promoted into ``extra``, with the same
+    typed-key exclusion and explicit-``extra`` precedence as ``PlatformConfig.from_dict``."""
     bridged: dict = {}
     if root_block:
         typed = PlatformConfig._TYPED_KEYS | {"channel_overrides"}

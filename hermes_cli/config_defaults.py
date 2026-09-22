@@ -958,6 +958,7 @@ DEFAULT_CONFIG = {
         # Narrow terminals still drop
         # context_detail/prompt_elapsed/idle_since.
         "status_bar": {
+            "model_aliases": True,  # False displays the model ID while keeping /model aliases.
             "fields": [],
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled

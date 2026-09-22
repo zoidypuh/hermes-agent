@@ -1,6 +1,7 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
 import json
+import re
 import pytest
 from unittest.mock import MagicMock
 
@@ -38,6 +39,93 @@ def test_name_only_mode_hides_tool_arguments_in_progress_and_completion():
     assert "terminal" in line
     assert "python3" not in line
     assert "12345" not in line
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\033\[[0-9;]*m", "", text)
+
+
+def _expected_token_label(result: str) -> str:
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.usage_pricing import format_token_count_compact
+    return f"{format_token_count_compact(estimate_tokens_rough(result))} tok"
+
+
+def _expected_total_label(results: list[str]) -> str:
+    from agent.model_metadata import estimate_tokens_rough
+    from agent.usage_pricing import format_token_count_compact
+    total = sum(estimate_tokens_rough(r) for r in results)
+    return f"∑ {format_token_count_compact(total)} tok total"
+
+
+def test_completion_line_has_no_total_line():
+    first = json.dumps({"output": "hello world " * 50, "exit_code": 0})
+    first_line = get_cute_tool_message("terminal", {"command": "echo hi"}, 1.2, result=first)
+    assert first_line.count("\n") == 0
+    assert "∑" not in _strip_ansi(first_line)
+
+
+def test_turn_total_line_sums_all_calls():
+    import json as _json
+    from agent.display import tool_token_total_line, turn_tool_token_total
+    first = _json.dumps({"output": "hello world " * 50, "exit_code": 0})
+    second = _json.dumps({"output": "boom " * 80, "exit_code": 0})
+
+    messages = [
+        {"role": "tool", "content": first},
+        {"role": "tool", "content": second},
+    ]
+    total = turn_tool_token_total(messages, 0)
+    total_line = tool_token_total_line(total)
+    assert _strip_ansi(total_line).strip().endswith(_expected_total_label([first, second]))
+    assert "\033[38;2;239;83;80m" in total_line or "\033[38;2;" in total_line
+
+
+def test_turn_total_ignores_prior_turn_tool_results():
+    import json as _json
+    from agent.display import turn_tool_token_total
+    from agent.model_metadata import estimate_tokens_rough
+    stale = _json.dumps({"output": "stale " * 500, "exit_code": 0})
+    fresh = _json.dumps({"output": "fresh " * 50, "exit_code": 0})
+    messages = [
+        {"role": "user", "content": "old question"},
+        {"role": "tool", "content": stale},
+        {"role": "user", "content": "new question"},
+        {"role": "tool", "content": fresh},
+    ]
+    assert turn_tool_token_total(messages, 2) == estimate_tokens_rough(fresh)
+    assert turn_tool_token_total(messages, 0) > turn_tool_token_total(messages, 2)
+
+
+def test_token_usage_follows_duration_in_orange():
+    result = json.dumps({"output": "hello world " * 50, "exit_code": 0})
+    line = get_cute_tool_message("terminal", {"command": "echo hi"}, 1.2, result=result)
+    label = _expected_token_label(result)
+
+    first_line = line.splitlines()[0]
+    after_duration = first_line.split("1.2s", 1)[1]
+    assert after_duration.startswith(" ")
+    assert "\033[38;2;" in after_duration
+    assert _strip_ansi(after_duration).strip() == label
+    assert "[" not in _strip_ansi(after_duration)
+
+
+def test_token_usage_follows_exit_suffix_in_orange():
+    result = json.dumps({"output": "boom " * 80, "exit_code": 2})
+    line = get_cute_tool_message("terminal", {"command": "false"}, 0.0, result=result)
+    label = _expected_token_label(result)
+
+    plain = _strip_ansi(line.splitlines()[0])
+    assert f"0.0s [exit 2] {label}" in plain
+    assert "\033[38;2;" in line.split("[exit 2]", 1)[1]
+
+
+def test_name_only_token_usage_follows_exit_suffix():
+    set_tool_preview_mode("name_only")
+    result = json.dumps({"output": "boom " * 80, "exit_code": 2})
+    line = get_cute_tool_message("terminal", {"command": "false"}, 0.0, result=result)
+    label = _expected_token_label(result)
+    assert f"terminal  0.0s [exit 2] {label}" in _strip_ansi(line.splitlines()[0])
 
 
 def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):

@@ -14,6 +14,8 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    # Rendering tests use ready readings; the HTTP regression tests cover refresh.
+    cli_obj._read_status_bar_metric = lambda _name, reader, _ttl: reader()
     return cli_obj
 
 
@@ -947,3 +949,53 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+def test_model_alias_can_be_hidden_without_disabling_shortcut(monkeypatch):
+    model = "meta/muse-spark-1.3-contributor"
+    monkeypatch.setattr(cli_mod, "_REVERSE_ALIAS_CACHE", {model: "muse"})
+    config = deepcopy(cli_mod.CLI_CONFIG)
+    config.setdefault("display", {}).setdefault("status_bar", {})["model_aliases"] = False
+    monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+    obj = _make_cli(model)
+    assert obj._get_status_bar_snapshot()["model_short"] == model.split("/", 1)[1]
+    assert cli_mod._reverse_alias_for_display(model) == "muse"
+    config["display"]["status_bar"]["model_aliases"] = True
+    assert obj._get_status_bar_snapshot()["model_short"] == "muse"
+
+
+class TestHeartsSpinnerModelSegment:
+    """Hearts spinner replaces the staff glyph in front of the model while live."""
+
+    def _live_cli(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._prompt_start_time = time.time() - 19
+        cli_obj._prompt_duration = 0.0
+        return cli_obj
+
+    def test_hearts_frame_cycles(self):
+        from hermes_cli.cli_status_bar_mixin import _HEARTS_SPINNER_FRAMES
+        assert len(_HEARTS_SPINNER_FRAMES) == 5
+        f1 = HermesCLI._hearts_spinner_frame()
+        assert f1 in _HEARTS_SPINNER_FRAMES
+
+    def test_live_bar_shows_hearts_not_staff(self):
+        text = self._live_cli()._build_status_bar_text(width=120)
+        assert "⚕" not in text.split("│")[0]
+        from hermes_cli.cli_status_bar_mixin import _HEARTS_SPINNER_FRAMES
+        assert any(h in text for h in _HEARTS_SPINNER_FRAMES)
+
+    def test_idle_bar_keeps_staff(self):
+        cli_obj = self._live_cli()
+        cli_obj._prompt_start_time = None
+        cli_obj._prompt_duration = 5.0
+        text = cli_obj._build_status_bar_text(width=120)
+        assert text.startswith("⚕ ")

@@ -1507,7 +1507,8 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
-    segmented dispatcher owns turn-end work)."""
+    segmented dispatcher owns turn-end work). The tool token total accumulates for the
+    whole turn (reset once at turn start)."""
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
@@ -1777,7 +1778,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 def _execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
-    owns turn-end work)."""
+    owns turn-end work). The tool token total accumulates for the whole turn
+    (reset once at turn start)."""
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
     tool_calls = assistant_message.tool_calls
 
@@ -1836,7 +1838,8 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     plan from ``_plan_tool_batch_segments``), preserving per-call result order and barrier
     boundaries exactly as fully-sequential execution. Turn-end work (budget + /steer) runs
     once here (segments run with ``finalize=False``); each segment executor checks the
-    interrupt flag up front, so an interrupt drains later segments with one result per call."""
+    interrupt flag up front, so an interrupt drains later segments with one result per call.
+    The tool token total accumulates for the whole turn (reset once at turn start)."""
     from types import SimpleNamespace
 
     if segments is None:

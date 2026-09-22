@@ -126,7 +126,7 @@ class _EmbeddedCuaDaemon:
         self._owns_runtime = self._running = False
         self._stderr_tail: deque[str] = deque(maxlen=20)
         token = uuid.uuid4().hex[:12]
-        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32"
+        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32" or driver_cmd.lower().endswith(".exe")
                             else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
 
     def child_env(self) -> Dict[str, str]:

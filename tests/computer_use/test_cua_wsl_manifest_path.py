@@ -35,3 +35,9 @@ def test_resolve_mcp_invocation_normalizes_windows_manifest_command_in_wsl():
 
     assert command == "/mnt/c/Users/Fernando/AppData/Local/cua-driver/cua-driver.exe"
     assert args == ["mcp"]
+
+
+def test_windows_driver_embedded_socket_uses_named_pipe():
+    from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
+    daemon = _EmbeddedCuaDaemon("/mnt/c/Programs/Cua/cua-driver.exe", "unrestricted")
+    assert daemon.socket_path.startswith(chr(92) * 2 + "." + chr(92) + "pipe" + chr(92))

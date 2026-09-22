@@ -2180,6 +2180,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   status_bar:             # CLI/TUI: choose which status-bar fields are visible
+    model_aliases: true   # Classic CLI: false shows the model ID, preserving /model shortcuts
     fields: []            # empty = show the default set; see below
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
