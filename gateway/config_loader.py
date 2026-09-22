@@ -150,6 +150,7 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     merge(nested_gateway.get("platforms"))
     merge(yaml_cfg.get("platforms"))
     merge({k: v for k, v in nested_gateway.items() if k != "platforms" and isinstance(v, dict) and _is_platform_name(k)})
+    merge({k: v for k, v in yaml_cfg.items() if isinstance(v, dict) and _is_platform_name(k)})
 
     api_plat = platforms_data.get("api_server")
     if isinstance(api_plat, dict):
@@ -218,6 +219,7 @@ _PORT_BRIDGE_KEYS: dict = {
     Platform.WEBHOOK: ("port", "host", "secret"),
     Platform.MSGRAPH_WEBHOOK: ("port", "host", "secret"),
     Platform.API_SERVER: ("port", "host"),
+    Platform.WHATSAPP: ("bridge_port",),
 }
 
 

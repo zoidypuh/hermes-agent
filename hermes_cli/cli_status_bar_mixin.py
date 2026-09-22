@@ -8,6 +8,7 @@ inside each method (``from cli import ...``) — never at module load time (impo
 from __future__ import annotations
 
 import errno
+import logging
 import shutil
 import threading
 import time
@@ -16,6 +17,9 @@ from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
 
+_STATUS_METRIC_LOCK = threading.Lock()
+_LOG = logging.getLogger(__name__)
+
 _SB = "class:status-bar"
 _DIM = "class:status-bar-dim"
 _STRONG = "class:status-bar-strong"
@@ -23,6 +27,10 @@ _AGENT_COUNTERS = (
     "session_input_tokens", "session_output_tokens", "session_cache_read_tokens",
     "session_cache_write_tokens", "session_prompt_tokens", "session_completion_tokens",
     "session_total_tokens", "session_api_calls")
+
+# Animated hearts spinner for the live status bar (rich 'hearts' frames).
+# time.monotonic()-driven like _command_spinner_frame: no thread, no state.
+_HEARTS_SPINNER_FRAMES = ("💛", "💙", "💜", "💚", "❤️")
 
 
 def _threshold_style(value, ladder, fallback: str) -> str:
@@ -41,6 +49,32 @@ def _finite(v):
 class CLIStatusBarMixin:
     """Status bar, spinner, turn-summary, pet pane, and prompt-stash rendering for the
     interactive CLI."""
+
+    def _read_status_bar_metric(self, name: str, reader, ttl: float):
+        """Serve the previous reading while one background refresh runs.
+
+        A cached reader can still block on expiry (HTTP, DNS, or PowerShell).
+        None means the first reading is pending, so the footer hides that metric.
+        """
+        with _STATUS_METRIC_LOCK:
+            cache = self.__dict__.setdefault("_status_bar_metric_cache", {})
+            updated, value, pending = cache.get(name, (float("-inf"), None, False))
+            if pending or time.monotonic() - updated < ttl:
+                return value
+            cache[name] = (updated, value, True)
+
+        def refresh():
+            reading = value
+            try:
+                reading = reader()
+            except Exception:
+                _LOG.debug("Status metric %s refresh failed", name, exc_info=True)
+            finally:
+                with _STATUS_METRIC_LOCK:
+                    cache[name] = (time.monotonic(), reading, False)
+
+        threading.Thread(target=refresh, name=f"status-{name}", daemon=True).start()
+        return value
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -234,6 +268,11 @@ class CLIStatusBarMixin:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _hearts_spinner_frame() -> str:
+        """Current hearts-spinner frame, driven by wall clock (100ms per frame)."""
+        return _HEARTS_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_HEARTS_SPINNER_FRAMES)]
+
+    @staticmethod
     def _format_prompt_elapsed(
         prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Per-prompt elapsed time. Always a string (``⏲ 0s`` on fresh start); seconds stay
@@ -275,7 +314,13 @@ class CLIStatusBarMixin:
         model_name = (getattr(agent, "model", None) or self.model or "unknown")
         # Friendly display: reverse-alias from config ``model_aliases:`` first (turns long
         # Palantir RIDs into the user's short name), else slash/length truncation.
-        model_short = _reverse_alias_for_display(model_name)
+        from cli import CLI_CONFIG
+        status_bar = CLI_CONFIG.get("display", {}).get("status_bar", {})
+        model_short = (
+            _reverse_alias_for_display(model_name)
+            if status_bar.get("model_aliases", True)
+            else model_name
+        )
         if model_short == model_name:
             model_short = model_name.split("/")[-1] if "/" in model_name else model_name
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
@@ -329,31 +374,32 @@ class CLIStatusBarMixin:
         except Exception:
             pass
 
-        # Battery reads are memoised inside agent.battery, so per-repaint polling is cheap.
+        # Even cache misses must stay off the input/render thread.
         if getattr(self, "_battery_visible", False):
             try:
                 from agent.battery import battery_category, format_battery, read_battery
 
-                _batt = read_battery()
-                snapshot["battery_label"] = format_battery(_batt)
-                snapshot["battery_category"] = battery_category(_batt)
+                _batt = self._read_status_bar_metric("battery", read_battery, 8.0)
+                if _batt is not None:
+                    snapshot["battery_label"] = format_battery(_batt)
+                    snapshot["battery_category"] = battery_category(_batt)
             except Exception:
                 pass
 
-        # GPU VRAM reads are memoised inside agent.gpu, so per-repaint polling is cheap.
+        # A slow or offline Usage API must not delay keystrokes.
         if getattr(self, "_gpu_visible", False):
             try:
                 from agent.gpu import format_gpu, gpu_category, read_gpu
 
-                _gpu = read_gpu()
-                snapshot["gpu_label"] = format_gpu(_gpu)
-                snapshot["gpu_category"] = gpu_category(_gpu)
+                _gpu = self._read_status_bar_metric("gpu", read_gpu, 30.0)
+                if _gpu is not None:
+                    snapshot["gpu_label"] = format_gpu(_gpu)
+                    snapshot["gpu_category"] = gpu_category(_gpu)
             except Exception:
                 pass
 
-        # ChatGPT/Grok remaining quotas and OpenRouter credits are memoised
-        # inside agent.ai_usage (~10min TTL), so per-repaint polling is cheap.
-        # Fails open: offline or missing tokens just hide the segments.
+        # Refresh the quota group together so all three share one HTTP payload.
+        # Keep the prior labels visible until the background refresh completes.
         if getattr(self, "_ai_usage_visible", False):
             try:
                 from agent.ai_usage import (
@@ -367,15 +413,19 @@ class CLIStatusBarMixin:
                     usage_category,
                 )
 
-                _cgpt = read_chatgpt_usage()
-                snapshot["chatgpt_label"] = format_chatgpt(_cgpt)
-                snapshot["chatgpt_category"] = usage_category(_cgpt)
-                _grok = read_grok_usage()
-                snapshot["grok_label"] = format_grok(_grok)
-                snapshot["grok_category"] = usage_category(_grok)
-                _or = read_openrouter_credits()
-                snapshot["openrouter_label"] = format_openrouter(_or)
-                snapshot["openrouter_category"] = credits_category(_or)
+                readings = self._read_status_bar_metric(
+                    "ai_usage",
+                    lambda: (read_chatgpt_usage(), read_grok_usage(), read_openrouter_credits()),
+                    600.0,
+                )
+                if readings is not None:
+                    _cgpt, _grok, _or = readings
+                    snapshot["chatgpt_label"] = format_chatgpt(_cgpt)
+                    snapshot["chatgpt_category"] = usage_category(_cgpt)
+                    snapshot["grok_label"] = format_grok(_grok)
+                    snapshot["grok_category"] = usage_category(_grok)
+                    snapshot["openrouter_label"] = format_openrouter(_or)
+                    snapshot["openrouter_category"] = credits_category(_or)
             except Exception:
                 pass
 
@@ -1140,6 +1190,7 @@ class CLIStatusBarMixin:
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
         focus_label = snapshot.get("focus_label") or ""
+        turn_live = bool(getattr(self, "_prompt_start_time", None))
 
         def _ok(name: str) -> bool:
             return field_set is None or name in field_set
@@ -1157,9 +1208,15 @@ class CLIStatusBarMixin:
 
         if _ok("model"):
             if styled:
-                segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
+                if turn_live:
+                    segs.append([(_SB, " "), (_STRONG, self._hearts_spinner_frame()), (_SB, " "), (_STRONG, model_short)])
+                else:
+                    segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
             else:
-                segs.append([("", f"⚕ {model_short}")])
+                if turn_live:
+                    segs.append([("", f"{self._hearts_spinner_frame()} {model_short}")])
+                else:
+                    segs.append([("", f"⚕ {model_short}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
