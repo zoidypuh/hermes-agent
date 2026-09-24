@@ -268,13 +268,11 @@ function gpuColor(info: GpuInfo, t: Theme): string {
   return t.color.muted
 }
 
-// Compact GPU label: `GPU 19.0/31.8G` in GiB with one decimal. Renders `--`
-// for unknown halves so a null can never surface as "nullG".
+// Compact GPU label: `19.0G` — used VRAM only, in GiB with one decimal, no
+// `GPU` prefix (footer position makes the source obvious). Total stays for
+// the `showGpu` guard + colouring but is not printed.
 function gpuLabel(info: GpuInfo): string {
-  const used = info.used_mib != null ? `${(info.used_mib / 1024).toFixed(1)}` : '--'
-  const total = info.total_mib != null ? `${(info.total_mib / 1024).toFixed(1)}` : '--'
-
-  return `GPU ${used}/${total}G`
+  return `${(info.used_mib / 1024).toFixed(1)}G`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its

@@ -77,7 +77,7 @@ def test_status_repaint_does_not_wait_for_metrics_http(monkeypatch, metric):
             if snapshot[field]:
                 break
             time.sleep(0.01)
-        assert snapshot[field] == ("4.0/32.0G" if metric == "gpu" else "75%")
+        assert snapshot[field] == ("4.0G" if metric == "gpu" else "75%")
         if metric == "ai_usage":
             assert snapshot["grok_label"] == "51%"
             assert snapshot["openrouter_label"] == "8,49$"

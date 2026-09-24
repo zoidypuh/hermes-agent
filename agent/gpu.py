@@ -110,8 +110,11 @@ def gpu_category(status: GpuStatus) -> str:
 
 
 def format_gpu(status: GpuStatus) -> str:
-    """Compact label like ``19.0/31.8G`` (empty if N/A). No ``GPU`` prefix —
-    the footer position makes the source obvious."""
-    if not status.available or status.used_mib is None or status.total_mib is None:
+    """Compact label like ``19.0G`` (used only, empty if N/A). No ``GPU``
+    prefix — the footer position makes the source obvious.
+
+    The footer shows only the currently-used VRAM; total capacity stays in
+    ``total_mib`` for ``gpu_category`` colouring but is not printed."""
+    if not status.available or status.used_mib is None:
         return ""
-    return f"{status.used_mib / 1024:.1f}/{status.total_mib / 1024:.1f}G"
+    return f"{status.used_mib / 1024:.1f}G"

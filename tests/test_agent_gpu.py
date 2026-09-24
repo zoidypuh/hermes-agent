@@ -23,7 +23,7 @@ def setup_function(_fn):
 
 
 def test_format_gpu_gib_one_decimal():
-    assert format_gpu(_make_status()) == "19.0/31.8G"
+    assert format_gpu(_make_status()) == "19.0G"
 
 
 def test_format_gpu_empty_when_unavailable():

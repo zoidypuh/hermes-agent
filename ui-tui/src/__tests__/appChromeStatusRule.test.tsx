@@ -363,7 +363,7 @@ describe('StatusRule GPU VRAM indicator', () => {
       gpu: { available: true, category: 'warn', name: 'NVIDIA GeForce RTX 5090', total_mib: 32607, used_mib: 19442 }
     })
 
-    expect(textContent(element)).toContain('GPU 19.0/31.8G')
+    expect(textContent(element)).toContain('19.0G')
   })
 
   it('colours the read-out by category (critical → theme statusCritical)', () => {
