@@ -272,7 +272,7 @@ function gpuColor(info: GpuInfo, t: Theme): string {
 // `GPU` prefix (footer position makes the source obvious). Total stays for
 // the `showGpu` guard + colouring but is not printed.
 function gpuLabel(info: GpuInfo): string {
-  return `${(info.used_mib / 1024).toFixed(1)}G`
+  return `${((info.used_mib ?? 0) / 1024).toFixed(1)}G`
 }
 
 // Colour a credits notice by its level. The notice TEXT already carries its

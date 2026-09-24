@@ -372,7 +372,7 @@ describe('StatusRule GPU VRAM indicator', () => {
       gpu: { available: true, category: 'critical', name: null, total_mib: 1000, used_mib: 960 }
     })
 
-    const leaf = findElementWithText(element, 'GPU')
+    const leaf = findElementWithText(element, '0.9G')
     expect(leaf?.props.color).toBe(DEFAULT_THEME.color.statusCritical)
   })
 
