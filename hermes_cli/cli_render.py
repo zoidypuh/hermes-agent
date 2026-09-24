@@ -451,6 +451,26 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
+    # Markdown discards SGR styling. Keep standalone ANSI card blocks as Rich
+    # Text while rendering the surrounding prose as Markdown. In particular,
+    # this preserves the background and padded cells of terminal tip cards.
+    if text and "\x1b[" in text:
+        from rich.console import Group
+
+        parts = re.split(r"(?m)(?=^(?:\x1b\[[0-9;]*m)+[╭┌])", text)
+        if len(parts) > 1:
+            renderables = []
+            for part in parts:
+                card = re.match(r"(?s)(.*?\x1b\[0m)(?=\n|$)", part) if part.startswith("\x1b[") else None
+                if card:
+                    renderables.append(_rich_text_from_ansi(card.group(1)))
+                    remainder = part[card.end():].strip("\n")
+                    if remainder:
+                        renderables.append(Markdown(remainder))
+                elif part.strip():
+                    renderables.append(Markdown(part.strip("\n")))
+            return Group(*renderables)
+
     # Normalising under-padded tables up front gives narrow-panel fallbacks consistent input.
     plain = _rich_text_from_ansi(text or "").plain
     plain = _preserve_windows_dot_segments_for_markdown(plain)
