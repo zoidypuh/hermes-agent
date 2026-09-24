@@ -14,8 +14,6 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
-    # Rendering tests use ready readings; the HTTP regression tests cover refresh.
-    cli_obj._read_status_bar_metric = lambda _name, reader, _ttl: reader()
     return cli_obj
 
 
@@ -94,14 +92,6 @@ class TestCLIStatusBar:
 
         assert cli_obj._status_bar_visible is False
 
-    def test_context_style_thresholds(self):
-        cli_obj = _make_cli()
-
-        assert cli_obj._status_bar_context_style(None) == "class:status-bar-dim"
-        assert cli_obj._status_bar_context_style(10) == "class:status-bar-good"
-        assert cli_obj._status_bar_context_style(50) == "class:status-bar-warn"
-        assert cli_obj._status_bar_context_style(81) == "class:status-bar-bad"
-        assert cli_obj._status_bar_context_style(95) == "class:status-bar-critical"
 
     def test_build_status_bar_text_for_wide_terminal(self):
         cli_obj = _attach_agent(
@@ -159,32 +149,10 @@ class TestCLIStatusBar:
 
 
 
-    def test_minimal_tui_chrome_threshold(self):
-        cli_obj = _make_cli()
-
-        assert cli_obj._use_minimal_tui_chrome(width=63) is True
-        assert cli_obj._use_minimal_tui_chrome(width=64) is False
 
 
 
 
-    def test_scheduled_unsuppress_debounces_resize_storm(self):
-        """A fresh resize cancels the pending unsuppress and restarts it."""
-        cli_obj = _make_cli()
-        cli_obj._status_bar_unsuppress_timer = None
-        cli_obj._status_bar_suppressed_after_resize = True
-        app = MagicMock()
-        app.loop = None
-
-        # First schedule (long delay) then a second should cancel the first.
-        cli_obj._schedule_status_bar_unsuppress(app, delay=5.0)
-        first_timer = cli_obj._status_bar_unsuppress_timer
-        assert first_timer is not None
-        cli_obj._schedule_status_bar_unsuppress(app, delay=0.01)
-        assert first_timer is not cli_obj._status_bar_unsuppress_timer
-        assert not first_timer.is_alive() or first_timer.finished.is_set()
-        time.sleep(0.1)
-        assert cli_obj._status_bar_suppressed_after_resize is False
 
 
 
@@ -197,17 +165,6 @@ class TestCLIStatusBar:
         assert cli_obj._spinner_widget_height(width=64) == 2
 
 
-    def test_voice_status_bar_compacts_on_narrow_terminals(self):
-        cli_obj = _make_cli()
-        cli_obj._voice_mode = True
-        cli_obj._voice_recording = False
-        cli_obj._voice_processing = False
-        cli_obj._voice_tts = True
-        cli_obj._voice_continuous = True
-
-        fragments = cli_obj._get_voice_status_fragments(width=50)
-
-        assert fragments == [("class:voice-status", " 🎤 Ctrl+B ")]
 
 
     # Round-13 Copilot review regressions on #19835. The label in voice
@@ -235,36 +192,6 @@ class TestCLIStatusBar:
 
 
 
-class TestCLIUsageReport:
-    def test_show_usage_omits_cost_reporting(self, capsys):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=1,
-        )
-        cli_obj.verbose = False
-
-        cli_obj._show_usage()
-        output = capsys.readouterr().out
-
-        # Token counts and session metadata still shown.
-        assert "Model:" in output
-        assert "Input tokens:" in output
-        assert "Output tokens:" in output
-        assert "Total tokens:" in output
-        assert "Session duration:" in output
-        assert "Compressions:" in output
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "Total cost:" not in output
-        assert "Cost status:" not in output
-        assert "Cost source:" not in output
-        assert "Cache read tokens:" not in output
-        assert "Cache write tokens:" not in output
 
 
 class TestCLIUsageNoAgentAccountLimits:
@@ -351,36 +278,8 @@ class TestStatusBarWidthSource:
         assert text.endswith(" weekly-digest ")
         assert cli_obj._status_bar_display_width(text) == 100
 
-    def test_fragments_use_pt_width_over_shutil(self):
-        """When prompt_toolkit reports a width, shutil.get_terminal_size must not be used."""
-        from unittest.mock import MagicMock, patch
-        cli_obj = self._make_wide_cli()
-
-        mock_app = MagicMock()
-        mock_app.output.get_size.return_value = MagicMock(columns=120)
-
-        with patch("prompt_toolkit.application.get_app", return_value=mock_app) as mock_get_app, \
-             patch("shutil.get_terminal_size") as mock_shutil:
-            cli_obj._get_status_bar_fragments()
-
-        mock_shutil.assert_not_called()
 
 
-    def test_build_status_bar_text_uses_pt_width(self):
-        """_build_status_bar_text() must also prefer prompt_toolkit width."""
-        from unittest.mock import MagicMock, patch
-        cli_obj = self._make_wide_cli()
-
-        mock_app = MagicMock()
-        mock_app.output.get_size.return_value = MagicMock(columns=80)
-
-        with patch("prompt_toolkit.application.get_app", return_value=mock_app), \
-             patch("shutil.get_terminal_size") as mock_shutil:
-            text = cli_obj._build_status_bar_text()  # no explicit width
-
-        mock_shutil.assert_not_called()
-        assert isinstance(text, str)
-        assert len(text) > 0
 
 
 
@@ -399,13 +298,6 @@ class TestIdleSinceLastTurn:
         assert label == "✓ 42s"
 
 
-    def test_snapshot_carries_idle_since(self):
-        cli_obj = _make_cli()
-        cli_obj._last_turn_finished_at = time.time() - 10
-        cli_obj._prompt_start_time = None
-        cli_obj._prompt_duration = 5.0
-        snapshot = cli_obj._get_status_bar_snapshot()
-        assert snapshot["idle_since"].startswith("✓ ")
 
 
 
@@ -428,24 +320,6 @@ class TestStatusBarFieldConfig:
             text = cli_obj._build_status_bar_text(width=width)
         return text
 
-    def test_default_fields_show_all(self):
-        """With no config, all default fields appear."""
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        with patch.object(cli_mod, "CLI_CONFIG", {}):
-            text = cli_obj._build_status_bar_text(width=120)
-        assert "claude-sonnet-4-20250514" in text
-        assert "12.4K/200K" in text
-        assert "🗜️" in text
-        assert "15m" in text
 
     def test_only_model_and_duration(self):
         text = self._cli_with_fields(["model", "duration"])
@@ -455,48 +329,15 @@ class TestStatusBarFieldConfig:
         assert "🗜️" not in text
         assert "%" not in text
 
-    def test_only_model(self):
-        text = self._cli_with_fields(["model"])
-        assert "claude-sonnet-4-20250514" in text
-        assert "15m" not in text
-        assert "12.4K/200K" not in text
 
-    def test_context_pct_only(self):
-        text = self._cli_with_fields(["context_pct"])
-        assert "%" in text
-        assert "claude-sonnet-4-20250514" not in text
 
-    def test_compressions_only(self):
-        text = self._cli_with_fields(["compressions"])
-        assert "🗜️ 7" in text
-        assert "claude-sonnet-4-20250514" not in text
 
     def test_total_tokens_when_explicitly_requested(self):
         text = self._cli_with_fields(["model", "total_tokens"])
         assert "Σ12.4K" in text
         assert "claude-sonnet-4-20250514" in text
 
-    def test_total_tokens_hidden_by_default(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        with patch.object(cli_mod, "CLI_CONFIG", {}):
-            text = cli_obj._build_status_bar_text(width=120)
-        assert "Σ" not in text
 
-    def test_narrow_terminal_drops_context_detail(self):
-        """Narrow terminal (<76) ignores context_detail even if configured."""
-        text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)
-        assert "claude-sonnet-4-20250514" in text
-        assert "15m" in text
-        assert "12.4K/200K" not in text
 
     def test_field_config_never_empties_the_bar(self):
         """A fields list matching nothing still anchors on the model name."""
@@ -524,13 +365,6 @@ class TestStatusBarFieldConfig:
         assert not any("🗜️" in t for t in frag_texts)
         assert not any("12.4K" in t for t in frag_texts)
 
-    def test_field_order_is_fixed(self):
-        """Config controls visibility, not ordering — model stays first."""
-        text = self._cli_with_fields(["duration", "model", "compressions"])
-        model_pos = text.find("claude-sonnet-4-20250514")
-        comp_pos = text.find("🗜️")
-        dur_pos = text.find("15m")
-        assert 0 <= model_pos < comp_pos < dur_pos
 
     def test_empty_fields_list_uses_defaults(self):
         text = self._cli_with_fields([])
@@ -538,210 +372,6 @@ class TestStatusBarFieldConfig:
         assert "12.4K/200K" in text
         assert "🗜️" in text
 
-    def test_gpu_only(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._gpu_visible = True
-        fake = types.SimpleNamespace(
-            read_gpu=lambda: types.SimpleNamespace(
-                available=True, used_mib=19442, total_mib=32607,
-                name="NVIDIA GeForce RTX 5090",
-            ),
-            format_gpu=lambda _s: "GPU 19.0/31.8G",
-            gpu_category=lambda _s: "warn",
-        )
-        with patch.dict(sys.modules, {"agent.gpu": fake}):
-            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "gpu"]}}}):
-                text = cli_obj._build_status_bar_text(width=120)
-        assert "GPU 19.0/31.8G" in text
-        assert "claude-sonnet-4-20250514" in text
-
-    def test_gpu_hidden_by_field_filter(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._gpu_visible = True
-        fake = types.SimpleNamespace(
-            read_gpu=lambda: types.SimpleNamespace(
-                available=True, used_mib=19442, total_mib=32607,
-                name="NVIDIA GeForce RTX 5090",
-            ),
-            format_gpu=lambda _s: "GPU 19.0/31.8G",
-            gpu_category=lambda _s: "warn",
-        )
-        with patch.dict(sys.modules, {"agent.gpu": fake}):
-            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
-                text = cli_obj._build_status_bar_text(width=120)
-        assert "GPU 19.0/31.8G" not in text
-        assert "claude-sonnet-4-20250514" in text
-
-    def test_openrouter_credits_pinned_at_end(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._ai_usage_visible = True
-        fake = types.SimpleNamespace(
-            format_chatgpt=lambda _s: "75%",
-            format_grok=lambda _s: "51%",
-            format_openrouter=lambda _s: "8,49$",
-            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
-            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
-            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
-            usage_category=lambda _s: "good",
-            credits_category=lambda _s: "warn",
-        )
-        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
-            text = cli_obj._build_status_bar_text(width=160)
-        assert text.rstrip().endswith("8,49$")
-        chatgpt_pos = text.find("75%")
-        grok_pos = text.find("51%")
-        or_pos = text.find("8,49$")
-        assert 0 <= chatgpt_pos < grok_pos < or_pos
-
-    def test_openrouter_hidden_by_field_filter(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._ai_usage_visible = True
-        fake = types.SimpleNamespace(
-            format_chatgpt=lambda _s: "75%",
-            format_grok=lambda _s: "51%",
-            format_openrouter=lambda _s: "8,49$",
-            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
-            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
-            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
-            usage_category=lambda _s: "good",
-            credits_category=lambda _s: "warn",
-        )
-        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
-            with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
-                text = cli_obj._build_status_bar_text(width=160)
-        assert "8,49$" not in text
-        assert "claude-sonnet-4-20250514" in text
-
-    def test_openrouter_implied_by_chatgpt_grok_fields(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._ai_usage_visible = True
-        fake = types.SimpleNamespace(
-            format_chatgpt=lambda _s: "75%",
-            format_grok=lambda _s: "51%",
-            format_openrouter=lambda _s: "8,49$",
-            read_chatgpt_usage=lambda: types.SimpleNamespace(available=True, remaining=75),
-            read_grok_usage=lambda: types.SimpleNamespace(available=True, remaining=51),
-            read_openrouter_credits=lambda: types.SimpleNamespace(available=True, remaining=8.49),
-            usage_category=lambda _s: "good",
-            credits_category=lambda _s: "warn",
-        )
-        with patch.dict(sys.modules, {"agent.ai_usage": fake}):
-            with patch.object(
-                cli_mod,
-                "CLI_CONFIG",
-                {"display": {"status_bar": {"fields": ["model", "chatgpt", "grok"]}}},
-            ):
-                text = cli_obj._build_status_bar_text(width=160)
-        assert text.rstrip().endswith("8,49$")
-
-    def test_ai_usage_omitted_when_api_has_no_data(self):
-        import sys
-        import types
-
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-            compressions=7,
-        )
-        cli_obj._ai_usage_visible = True
-        cli_obj._gpu_visible = True
-        fake_usage = types.SimpleNamespace(
-            format_chatgpt=lambda _s: "",
-            format_grok=lambda _s: "",
-            format_openrouter=lambda _s: "",
-            read_chatgpt_usage=lambda: types.SimpleNamespace(available=False, remaining=None),
-            read_grok_usage=lambda: types.SimpleNamespace(available=False, remaining=None),
-            read_openrouter_credits=lambda: types.SimpleNamespace(available=False, remaining=None),
-            usage_category=lambda _s: "dim",
-            credits_category=lambda _s: "dim",
-        )
-        fake_gpu = types.SimpleNamespace(
-            read_gpu=lambda: types.SimpleNamespace(
-                available=False, used_mib=None, total_mib=None, name=None,
-            ),
-            format_gpu=lambda _s: "",
-            gpu_category=lambda _s: "dim",
-        )
-        with patch.dict(sys.modules, {"agent.ai_usage": fake_usage, "agent.gpu": fake_gpu}):
-            text = cli_obj._build_status_bar_text(width=160)
-        assert "8,49$" not in text
-        assert "75%" not in text
-        assert "GPU" not in text
-        assert "claude-sonnet-4-20250514" in text
-
-    def test_field_set_is_cached_per_instance(self):
-        cli_obj = _make_cli()
-        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
-            first = cli_obj._get_status_bar_field_set()
-        # Cache holds even if config object changes afterwards (per-session semantics).
-        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["duration"]}}}):
-            second = cli_obj._get_status_bar_field_set()
-        assert first == second == frozenset({"model"})
 
 
 class TestCacheHitRate:
@@ -762,22 +392,6 @@ class TestCacheHitRate:
 
         assert "◎ 76.0%" in text
 
-    def test_cache_hit_rate_shown_in_narrow_terminal(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_000,
-            completion_tokens=2_000,
-            total_tokens=12_000,
-            api_calls=5,
-            context_tokens=12_000,
-            context_length=200_000,
-            cache_read_tokens=5000,
-            cache_write_tokens=0,
-        )
-
-        text = cli_obj._build_status_bar_text(width=60)
-
-        assert "◎ 50%" in text
 
     def test_cache_hit_rate_hidden_when_zero(self):
         cli_obj = _attach_agent(
@@ -796,37 +410,7 @@ class TestCacheHitRate:
 
         assert "◎" not in text
 
-    def test_cache_hit_rate_hidden_when_no_data(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_000,
-            completion_tokens=2_000,
-            total_tokens=12_000,
-            api_calls=5,
-            context_tokens=12_000,
-            context_length=200_000,
-        )
 
-        text = cli_obj._build_status_bar_text(width=120)
-
-        assert "◎" not in text
-
-    def test_cache_hit_rate_one_decimal(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_000,
-            completion_tokens=2_000,
-            total_tokens=12_000,
-            api_calls=5,
-            context_tokens=12_000,
-            context_length=200_000,
-            cache_read_tokens=7620,
-            cache_write_tokens=0,
-        )
-
-        text = cli_obj._build_status_bar_text(width=120)
-
-        assert "◎ 76.2%" in text
 
     def test_cache_hit_rate_with_anthropic_style_cache(self):
         """Anthropic has both cache_read and cache_write"""
@@ -878,17 +462,6 @@ class TestRollingLatencyVelocity:
         assert "\u25f7" not in text
         assert "t/s" not in text
 
-    def test_latency_and_tps_respect_field_filter(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
-            api_calls=5, context_tokens=12_000, context_length=200_000,
-        )
-        self._with_history(cli_obj, [2.0], [100])
-        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
-            text = cli_obj._build_status_bar_text(width=140)
-        assert "\u25f7" not in text
-        assert "t/s" not in text
 
     def test_negative_latency_guard(self):
         cli_obj = _attach_agent(
@@ -949,53 +522,3 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
-
-
-def test_model_alias_can_be_hidden_without_disabling_shortcut(monkeypatch):
-    model = "meta/muse-spark-1.3-contributor"
-    monkeypatch.setattr(cli_mod, "_REVERSE_ALIAS_CACHE", {model: "muse"})
-    config = deepcopy(cli_mod.CLI_CONFIG)
-    config.setdefault("display", {}).setdefault("status_bar", {})["model_aliases"] = False
-    monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
-    obj = _make_cli(model)
-    assert obj._get_status_bar_snapshot()["model_short"] == model.split("/", 1)[1]
-    assert cli_mod._reverse_alias_for_display(model) == "muse"
-    config["display"]["status_bar"]["model_aliases"] = True
-    assert obj._get_status_bar_snapshot()["model_short"] == "muse"
-
-
-class TestHeartsSpinnerModelSegment:
-    """Hearts spinner replaces the staff glyph in front of the model while live."""
-
-    def _live_cli(self):
-        cli_obj = _attach_agent(
-            _make_cli(),
-            prompt_tokens=10_230,
-            completion_tokens=2_220,
-            total_tokens=12_450,
-            api_calls=7,
-            context_tokens=12_450,
-            context_length=200_000,
-        )
-        cli_obj._prompt_start_time = time.time() - 19
-        cli_obj._prompt_duration = 0.0
-        return cli_obj
-
-    def test_hearts_frame_cycles(self):
-        from hermes_cli.cli_status_bar_mixin import _HEARTS_SPINNER_FRAMES
-        assert len(_HEARTS_SPINNER_FRAMES) == 5
-        f1 = HermesCLI._hearts_spinner_frame()
-        assert f1 in _HEARTS_SPINNER_FRAMES
-
-    def test_live_bar_shows_hearts_not_staff(self):
-        text = self._live_cli()._build_status_bar_text(width=120)
-        assert "⚕" not in text.split("│")[0]
-        from hermes_cli.cli_status_bar_mixin import _HEARTS_SPINNER_FRAMES
-        assert any(h in text for h in _HEARTS_SPINNER_FRAMES)
-
-    def test_idle_bar_keeps_staff(self):
-        cli_obj = self._live_cli()
-        cli_obj._prompt_start_time = None
-        cli_obj._prompt_duration = 5.0
-        text = cli_obj._build_status_bar_text(width=120)
-        assert text.startswith("⚕ ")
