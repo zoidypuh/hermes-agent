@@ -1,6 +1,6 @@
 from io import StringIO
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 
 from cli import _render_final_assistant_content
@@ -20,6 +20,17 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "Title" in output
     assert "one" in output
     assert "two" in output
+
+
+def test_final_assistant_content_preserves_ansi_card_background_and_surrounding_markdown():
+    card = "\x1b[103m\x1b[30m╭────╮\n│ tip│\n╰────╯\x1b[0m"
+    renderable = _render_final_assistant_content("**Hello**\n\n" + card)
+    assert isinstance(renderable, Group)
+    output = StringIO()
+    Console(file=output, width=80, force_terminal=True, color_system="standard").print(renderable)
+    assert "Hello" in output.getvalue()
+    assert "\x1b[30;103m" in output.getvalue()
+    assert "tip" in output.getvalue()
 
 
 
