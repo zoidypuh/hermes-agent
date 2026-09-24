@@ -9,7 +9,13 @@ describe('toGpuInfo', () => {
 
   it('maps a full reading through faithfully', () => {
     expect(
-      toGpuInfo({ available: true, category: 'warn', name: 'NVIDIA GeForce RTX 5090', total_mib: 32607, used_mib: 19442 })
+      toGpuInfo({
+        available: true,
+        category: 'warn',
+        name: 'NVIDIA GeForce RTX 5090',
+        total_mib: 32607,
+        used_mib: 19442
+      })
     ).toEqual({
       available: true,
       category: 'warn',
