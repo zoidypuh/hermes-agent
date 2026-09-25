@@ -454,6 +454,8 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     # Markdown discards SGR styling. Keep standalone ANSI card blocks as Rich
     # Text while rendering the surrounding prose as Markdown. In particular,
     # this preserves the background and padded cells of terminal tip cards.
+    # Tip cards are multi-LINE blocks (every line starts with ESC), so match
+    # the whole run of consecutive ESC-led lines, not just the first line.
     if text and "\x1b[" in text:
         from rich.console import Group
 
@@ -461,10 +463,29 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         if len(parts) > 1:
             renderables = []
             for part in parts:
-                card = re.match(r"(?s)(.*?\x1b\[0m)(?=\n|$)", part) if part.startswith("\x1b[") else None
-                if card:
-                    renderables.append(_rich_text_from_ansi(card.group(1)))
-                    remainder = part[card.end():].strip("\n")
+                if part.startswith("\x1b["):
+                    lines = part.split("\n")
+                    card_lines = []
+                    rest_start = len(lines)
+                    for i, line in enumerate(lines):
+                        if line.startswith("\x1b["):
+                            card_lines.append(line)
+                        elif not line.strip():
+                            # A blank line ends the card only when followed by
+                            # a non-card line; trailing blanks belong to the gap.
+                            following = lines[i + 1:]
+                            if any(fl.strip() and not fl.startswith("\x1b[") for fl in following):
+                                rest_start = i
+                                break
+                            card_lines.append(line)
+                        else:
+                            rest_start = i
+                            break
+                    else:
+                        rest_start = len(lines)
+                    if card_lines:
+                        renderables.append(_rich_text_from_ansi("\n".join(card_lines)))
+                    remainder = "\n".join(lines[rest_start:]).strip("\n")
                     if remainder:
                         renderables.append(Markdown(remainder))
                 elif part.strip():
