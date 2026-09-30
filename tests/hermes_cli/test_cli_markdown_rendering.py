@@ -35,6 +35,48 @@ def test_final_assistant_content_preserves_ansi_card_background_and_surrounding_
 
 
 
+def test_literal_box_card_keeps_rows_with_or_without_ansi(monkeypatch):
+    import cli
+    from rich.text import Text
+
+    monkeypatch.setattr(cli, "_terminal_columns", lambda: 80)
+    card_lines = [
+        "╭──────────────────────────────────────────────╮",
+        "│ DOPUS F5                                     │",
+        "│ Lädt den aktuellen Ordner neu. Ctrl+F5 oder  │",
+        "│ Shift+F5 baut veraltete Thumbnails           │",
+        "│ zusätzlich neu.                              │",
+        "╰──────────────────────────────────────────────╯",
+    ]
+    for mode in ("render", "strip", "raw"):
+        for ansi in (False, True):
+            for prefix in ("", "**Hello**\n\n"):
+                # ANSI can be absent, repeated per row, or inherited by the body.
+                card = "\n".join(card_lines)
+                if ansi:
+                    card = "\x1b[103m\x1b[93m" + card + "\x1b[0m"
+                rendered = _render_final_assistant_content(prefix + card, mode=mode)
+                output = _render_to_text(rendered)
+                rows = [row.rstrip() for row in output.splitlines()]
+                for expected in card_lines:
+                    assert expected in rows, (mode, ansi, prefix, output)
+                if ansi and mode != "strip":
+                    parts = rendered.renderables if isinstance(rendered, Group) else [rendered]
+                    assert any(isinstance(part, Text) and part.spans for part in parts)
+
+
+def test_literal_box_does_not_swallow_surrounding_markdown_or_fences():
+    card = "╭──────────╮\n│ literal  │\n╰──────────╯"
+    rendered = _render_final_assistant_content("**Before**\n\n" + card + "\n\n**After**")
+    assert isinstance(rendered, Group)
+    output = _render_to_text(rendered)
+    assert "Before" in output and "After" in output and "**" not in output
+    assert "│ literal  │" in output.splitlines()
+    # An unfinished box is ordinary Markdown, not a card claiming the rest of the reply.
+    assert isinstance(_render_final_assistant_content("╭────╮\ntext"), Markdown)
+    assert isinstance(_render_final_assistant_content("```text\n" + card + "\n```"), Markdown)
+
+
 def test_final_assistant_content_keeps_non_path_markdown_escapes():
     renderable = _render_final_assistant_content(r"1\. Not an ordered list")
 
