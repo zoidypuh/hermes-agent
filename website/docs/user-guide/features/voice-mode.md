@@ -539,7 +539,7 @@ DISCORD_ALLOWED_USERS=...
 | **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
 | **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 
-Provider priority (automatic fallback): **local** > **groq** > **openai**
+Provider auto-detection prefers **local** > **groq** > **openai** > **mistral** > **xAI** > **ElevenLabs** > **DeepInfra**. To recover from a failed explicitly selected `local` or `local_command` provider, set `stt.fallback_provider: "xai"`. Each recording tries local first, then xAI on failure; successful silence and invalid inputs are not retried. For command-based STT, set `stt.local_command.timeout_seconds: 60` to terminate a stalled helper after one minute before recovery. See [STT configuration](../configuration.md#speech-to-text-stt) for the full settings.
 
 ### TTS Provider Comparison
 

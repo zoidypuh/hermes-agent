@@ -4,9 +4,9 @@
 Built-in providers: local (faster-whisper, default/free), local_command, groq, openai
 (also serves the managed ``nous`` selection), mistral, xai, elevenlabs, deepinfra; plus
 user-declared command providers and plugin providers. ``transcribe_audio(path)`` returns
-``{"success", "transcript", "error"?, "provider"?}``. This module owns provider resolution,
+``{"success", "transcript", "error"?, "provider"?, "fallback_from"?}``. This module owns provider resolution,
 the dispatcher and the cached local model + idle-unload state; backends live in
-``transcription_{common,audio,local,cloud,command}``.
+``transcription_{common,audio,local,cloud,command,fallback}``.
 """
 
 import logging
@@ -15,9 +15,7 @@ import shutil
 import threading
 import time
 import importlib.util as _ilu
-from contextlib import ExitStack
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Optional, Dict, Any
 
 from utils import is_truthy_value
@@ -41,6 +39,7 @@ from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via 
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
     _resolve_command_stt_provider_config, _transcribe_command_stt, _unregistered_stt_provider_error)
+from tools.transcription_fallback import transcribe_with_local_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -410,26 +409,7 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
-    with ExitStack() as cleanup:
-        if not _is_local_stt_provider(provider, stt_config):
-            error = _validate_audio_file_size(Path(file_path))
-            if error:
-                return error
-            # Never overwrite a neighboring WAV or leave converted voice notes behind.
-            if Path(file_path).suffix.lower() == ".caf":
-                work_dir = cleanup.enter_context(
-                    TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True)
-                )
-                file_path = _convert_caf_to_wav(file_path, work_dir)
-                if not file_path:
-                    return _error_result("CAF audio could not be converted to WAV.")
-        # Best-effort pre-upload silence trim for built-in cloud providers.
-        if provider in CLOUD_STT_PROVIDERS:
-            trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
-            if trimmed:
-                file_path = trimmed
-                cleanup.callback(shutil.rmtree, os.path.dirname(trimmed), ignore_errors=True)
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+    return transcribe_with_local_fallback(file_path, provider, stt_config, model, source)
 
 
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"

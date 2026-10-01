@@ -1131,6 +1131,8 @@ DEFAULT_CONFIG = {
 
     "stt": {
         "enabled": True,
+        # Explicit opt-in: retry local/local_command failures with xAI for this recording only.
+        "fallback_provider": "",  # "" (off) | "xai"
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
@@ -1155,6 +1157,9 @@ DEFAULT_CONFIG = {
             "no_speech_prob_threshold": 0.6,
             "logprob_threshold": -1.0,
             "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
+        },
+        "local_command": {
+            "timeout_seconds": 300,  # positive seconds before terminating the helper
         },
         "groq": {
             # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en

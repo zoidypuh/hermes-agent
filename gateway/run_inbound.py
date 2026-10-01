@@ -2017,7 +2017,7 @@ class GatewayInboundMixin:
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> Tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
+        if not result.get("success") and result.get("fallback_from") not in {"local", "local_command"}:
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
                 logger.info("Configured STT failed for %s; recovered with local STT", path)

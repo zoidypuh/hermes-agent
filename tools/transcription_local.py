@@ -9,6 +9,7 @@ stay in ``transcription_tools`` (module state) and are read from it lazily.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import platform
 import shlex
@@ -29,7 +30,8 @@ logger = logging.getLogger("tools.transcription_tools")
 
 
 def _get_local_command_template() -> Optional[str]:
-    configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
+    from hermes_cli.config import get_env_value
+    configured = str(get_env_value(LOCAL_STT_COMMAND_ENV) or "").strip()
     if configured:
         return configured
     whisper_binary = _find_whisper_binary()
@@ -262,7 +264,8 @@ def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
-    from tools.transcription_tools import _resolve_stt_language
+    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
+    from tools.transcription_common import _get_stt_section
     if prompt:
         _log_prompt_unsupported("STT provider 'local_command'")
     command_template = _get_local_command_template()
@@ -271,6 +274,10 @@ def _transcribe_local_command(
     # Language: hook override > stt.local.language > stt.language > env > "en".
     language = language or _resolve_stt_language("local") or DEFAULT_LOCAL_STT_LANGUAGE
     normalized_model = _normalize_local_model(model_name)
+    command_cfg = _get_stt_section(_load_stt_config(), "local_command")
+    timeout = _config_number(command_cfg, "timeout_seconds", 300)
+    if not math.isfinite(timeout) or timeout <= 0:
+        timeout = 300
     try:
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
@@ -283,7 +290,7 @@ def _transcribe_local_command(
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).
             from tools.environments.local import hermes_subprocess_env
-            _run_quiet(shlex.split(command), timeout=300, env=hermes_subprocess_env(inherit_credentials=False))
+            _run_quiet(shlex.split(command), timeout=timeout, env=hermes_subprocess_env(inherit_credentials=False))
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")
