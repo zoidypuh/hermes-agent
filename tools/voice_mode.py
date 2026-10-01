@@ -1463,6 +1463,8 @@ def check_voice_requirements() -> Dict[str, Any]:
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
     stt_provider = _get_provider(stt_config)
+    from tools.transcription_fallback import available_stt_provider
+    stt_provider = available_stt_provider(stt_config, stt_provider)
     stt_label = None  # "OK (...)" once a native / command / plugin provider resolves
     if stt_provider in _NATIVE_STT_LABELS:
         stt_label = f"OK ({_NATIVE_STT_LABELS[stt_provider]})"

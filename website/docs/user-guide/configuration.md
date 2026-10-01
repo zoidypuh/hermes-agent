@@ -2412,6 +2412,9 @@ stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)
   echo_transcripts: true       # Post raw transcripts back to the chat as 🎙️ "..." (default: true)
   provider: "local"            # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | ...
+  fallback_provider: ""        # "xai" opts into recovery after local/local_command failures
+  local_command:
+    timeout_seconds: 300       # Positive seconds for the helper; use 60 for faster recovery
   language: "en"               # GLOBAL language hint for every provider (per-provider language wins); set "" for auto-detect
   cloud_trim_silence: true     # trim long pauses with ffmpeg before uploading to a cloud provider (default: true)
   cloud_trim_threshold_db: -40 # audio quieter than this counts as silence
@@ -2450,7 +2453,9 @@ Provider behavior:
 
 Cloud providers (groq, openai, mistral, xai, elevenlabs, deepinfra) get a **pre-upload silence trim** by default when `ffmpeg` is installed: long pauses in a voice note are collapsed client-side before the file uploads, keeping `cloud_trim_keep_ms` of each pause so natural pacing survives. Shorter audio means faster uploads, lower per-audio-minute billing, and fewer silence hallucinations from the remote model. Clips shorter than 12 seconds skip the trim entirely (savings can't matter there, and several providers bill a per-request minimum anyway). The trim is best-effort — if ffmpeg is missing, the trim fails, the clip is mostly silence, or trimming would save less than ~10%, the original file is uploaded untouched. Set `stt.cloud_trim_silence: false` to always upload the original (e.g. when transcribing music or ambient audio through a cloud provider). Command-type and plugin providers never get trimmed audio.
 
-An explicitly selected `stt.provider` is honored strictly — if it's unavailable, transcription errors with guidance to run `hermes tools` rather than switching providers. Only when no provider has ever been selected does Hermes auto-detect in this order: `local` → `groq` → `openai`.
+An explicitly selected `stt.provider` is honored strictly unless you opt into local recovery with `stt.fallback_provider: "xai"`. With `local` or `local_command` selected, a missing backend, failed transcription, or command timeout retries the recording through the existing xAI STT provider. Successful empty transcripts, `no_speech` results, disabled STT, and invalid inputs do not trigger recovery. The xAI attempt uses the active profile's credentials, language settings, upload limit, conversion, and silence trimming. If both attempts fail, the error includes both failures. Other primary providers are unaffected, and an empty `fallback_provider` disables recovery.
+
+Each recording starts with the local provider again; recovery never rewrites `stt.provider`. `stt.local_command.timeout_seconds` limits the helper process (default `300`; positive seconds, with invalid values using the default). It does not impose a timeout on in-process faster-whisper or include audio conversion time. Without an explicitly selected provider, Hermes auto-detects in this order: `local` → `groq` → `openai` → `mistral` → `xai` → `elevenlabs` → `deepinfra`.
 
 Groq and OpenAI model overrides are environment-driven:
 
