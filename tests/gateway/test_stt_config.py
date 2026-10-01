@@ -95,3 +95,24 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     assert transcripts == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_from", ["local", "local_command", None])
+async def test_local_recovery_is_not_repeated_by_gateway(fallback_from):
+    from gateway.run_inbound import GatewayInboundMixin
+    from unittest.mock import Mock
+
+    runner = GatewayInboundMixin()
+    runner._untranscribed_audio_note = lambda path: "untranscribed"
+    result = {"success": False, "transcript": "", "error": "cloud unavailable"}
+    if fallback_from:
+        result["fallback_from"] = fallback_from
+    primary = Mock(return_value=result)
+    passive_local = Mock(return_value={"success": True, "transcript": "local recovered"})
+    transcript, note = await runner._transcribe_one_clip("clip.wav", primary, passive_local)
+    if fallback_from:
+        passive_local.assert_not_called()
+        assert transcript is None and note == "untranscribed"
+    else:
+        passive_local.assert_called_once_with("clip.wav")
+        assert transcript == "local recovered"
+
