@@ -60,6 +60,18 @@ class RecallStatus:
     glyph: str = INDICATOR_GLYPH
 
 
+class ValidatedMemoryContext(str):
+    """String-compatible recall with provider-owned validation at the prompt boundary.
+
+    Implementations return a complete, fenced data block from ``render``. The
+    manager preserves the object through aggregation instead of flattening its
+    evidence before the final validation. Empty output means omit recall.
+    """
+
+    def render(self) -> str:
+        raise NotImplementedError
+
+
 # Prompts with no semantic signal; single source of truth for the core prefetch gate and
 # provider-side classifiers. Anchored and followed only by whitespace/punctuation, so
 # "k8s"/"yolo"/"note" do NOT match while "hi!"/"thanks :)"/"done???" do.
