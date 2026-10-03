@@ -58,6 +58,7 @@ export function useGpuPoll(gw: GatewayClient) {
 
         if (!cancelled) {
           const info = toGpuInfo(r)
+
           if (info?.available && info.used_mib != null && info.total_mib != null) {
             patchUiState({ gpuStatus: info })
           }
