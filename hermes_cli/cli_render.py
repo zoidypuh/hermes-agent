@@ -440,37 +440,65 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     panel_width = max(20, _terminal_columns() - 4)
 
     normalized_mode = str(mode or "render").strip().lower()
-    if normalized_mode == "strip":
-        # Strip first (inline markdown changes cell width), then re-align padding.
-        return _RichText(realign_markdown_tables(_strip_markdown_syntax(text), panel_width))
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
-    # Markdown discards SGR styling. Keep standalone ANSI card blocks as Rich
-    # Text while rendering the surrounding prose as Markdown. In particular,
-    # this preserves the background and padded cells of terminal tip cards.
-    if text and "\x1b[" in text:
-        from rich.console import Group
+    def prose(content: str):
+        if normalized_mode == "strip":
+            return _RichText(realign_markdown_tables(_strip_markdown_syntax(content), panel_width))
+        plain = _rich_text_from_ansi(content).plain
+        plain = _preserve_windows_dot_segments_for_markdown(plain)
+        return Markdown(realign_markdown_tables(plain, panel_width))
 
-        parts = re.split(r"(?m)(?=^(?:\x1b\[[0-9;]*m)+[╭┌])", text)
-        if len(parts) > 1:
-            renderables = []
-            for part in parts:
-                card = re.match(r"(?s)(.*?\x1b\[0m)(?=\n|$)", part) if part.startswith("\x1b[") else None
-                if card:
-                    renderables.append(_rich_text_from_ansi(card.group(1)))
-                    remainder = part[card.end():].strip("\n")
-                    if remainder:
-                        renderables.append(Markdown(remainder))
-                elif part.strip():
-                    renderables.append(Markdown(part.strip("\n")))
-            return Group(*renderables)
+    # Models often copy tool output without its ANSI escapes. A complete box
+    # is preformatted content even then: Markdown would collapse its newlines
+    # and padding. Detect geometry, not ESC prefixes, and keep fenced code in
+    # Markdown's care. Check the closing border so a partial box cannot claim
+    # the remaining prose. Body rows may inherit ANSI from the first line.
+    lines = (text or "").split("\n")
+    visible = [_rich_text_from_ansi(line).plain for line in lines]
+    renderables = []
+    start = i = 0
+    fence = None
+    while i < len(lines):
+        line = visible[i]
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            run, tail = marker.groups()
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not tail.strip():
+                fence = None
+            i += 1
+            continue
+        top = None if fence else re.fullmatch(r"([╭┌])─+[╮┐]", line)
+        if not top:
+            i += 1
+            continue
+        end = i + 1
+        while end < len(lines) and re.fullmatch(r"│.*│", visible[end]):
+            end += 1
+        bottom = "╰─+╯" if top.group(1) == "╭" else "└─+┘"
+        if end == i + 1 or end >= len(lines) or not re.fullmatch(bottom, visible[end]):
+            i += 1
+            continue
+        before = "\n".join(lines[start:i]).strip("\n")
+        if before:
+            renderables.append(prose(before))
+        card = "\n".join(lines[i:end + 1])
+        renderables.append(
+            _RichText("\n".join(visible[i:end + 1]))
+            if normalized_mode == "strip" else _rich_text_from_ansi(card)
+        )
+        start = i = end + 1
 
-    # Normalising under-padded tables up front gives narrow-panel fallbacks consistent input.
-    plain = _rich_text_from_ansi(text or "").plain
-    plain = _preserve_windows_dot_segments_for_markdown(plain)
-    plain = realign_markdown_tables(plain, panel_width)
-    return Markdown(plain)
+    if not renderables:
+        return prose(text or "")
+    remainder = "\n".join(lines[start:]).strip("\n")
+    if remainder:
+        renderables.append(prose(remainder))
+    from rich.console import Group
+    return Group(*renderables)
 
 
 def _post_stream_transform_output(response: str, result: dict | None) -> str:

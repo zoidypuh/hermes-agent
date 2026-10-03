@@ -990,8 +990,9 @@ class TestBackupEdgeCases:
         assert not (tmp_path / "out.zip").exists()
 
 
-    def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
-        """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
+    @pytest.mark.parametrize('writer', ['manual', 'automatic'])
+    def test_pre1980_timestamp_preserves_contents(self, tmp_path, monkeypatch, writer):
+        """Old timestamps must not turn a full recovery backup into an incomplete one."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("model: test\n")
@@ -1007,16 +1008,42 @@ class TestBackupEdgeCases:
         out_zip = tmp_path / "out.zip"
         args = Namespace(output=str(out_zip))
 
-        from hermes_cli.backup import run_backup
-        run_backup(args)
+        from hermes_cli.backup import run_backup, _write_full_zip_backup
+        if writer == 'manual':
+            assert run_backup(args) is True
+        else:
+            assert _write_full_zip_backup(out_zip, hermes_home) == out_zip
 
         # Zip should still be created with the valid files
         assert out_zip.exists()
         with zipfile.ZipFile(out_zip, "r") as zf:
             names = zf.namelist()
             assert "config.yaml" in names
-            # The pre-1980 file should be skipped, not crash the backup
-            assert "ancient.txt" not in names
+            assert zf.read("ancient.txt") == b"old data"
+            assert zf.getinfo("ancient.txt").date_time[0] == 1980
+
+    def test_cron_outputs_captured_before_slow_database_snapshot(self, tmp_path, monkeypatch):
+        """Cron can prune an output during a long DB copy without losing it from the archive."""
+        import hermes_cli.backup as backup
+        hermes_home = tmp_path / '.hermes'
+        output = hermes_home / 'cron/output/job/response.md'
+        output.parent.mkdir(parents=True)
+        output.write_text('retained job result')
+        source = hermes_home / 'state.db'
+        with sqlite3.connect(source) as db:
+            db.execute('create table evidence (value text)')
+        snapshot = backup._zip_sqlite_snapshot
+        def copy_then_prune(*args):
+            result = snapshot(*args)
+            output.unlink()
+            return result
+        monkeypatch.setattr(backup, '_zip_sqlite_snapshot', copy_then_prune)
+        out_zip = tmp_path / 'out.zip'
+        assert backup._write_full_zip_backup(out_zip, hermes_home) == out_zip
+        assert not output.exists()
+        with zipfile.ZipFile(out_zip) as archive:
+            assert archive.read('cron/output/job/response.md') == b'retained job result'
+            assert 'state.db' in archive.namelist()
 
 
 
