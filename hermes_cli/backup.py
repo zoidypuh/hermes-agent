@@ -124,7 +124,7 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
 # File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid", ".gateway-planned-stop.json"}
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
@@ -512,7 +512,10 @@ def _write_zip_entries(
     ``track_bytes`` stats plain files for the size total.
     """
     total_bytes = 0
-    for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
+    # Cron prunes old outputs as jobs finish. Capture them before large database
+    # snapshots and dependency-heavy trees extend the scan-to-read interval.
+    ordered = sorted(files_to_add, key=lambda item: "/cron/output/" not in "/" + item[1].as_posix())
+    for i, (abs_path, rel_path) in enumerate(ordered, 1):
         try:
             if abs_path.suffix == ".db":
                 size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
@@ -635,7 +638,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         logger.info("backup phase=archive status=progress completed=%d total=%d", i, file_count)
 
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
         total_bytes = _write_zip_entries(
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
@@ -2258,7 +2261,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     archive_started = time.monotonic()
     try:
         with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
-                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
