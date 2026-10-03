@@ -446,25 +446,53 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     if normalized_mode == "raw":
         return _rich_text_from_ansi(text or "")
 
-    # Markdown discards SGR styling. Keep standalone ANSI card blocks as Rich
-    # Text while rendering the surrounding prose as Markdown. In particular,
-    # this preserves the background and padded cells of terminal tip cards.
-    if text and "\x1b[" in text:
+    # Markdown joins literal box rows into a paragraph. Recognise complete
+    # standalone cards by their geometry, even when model output lost the SGR
+    # escapes. A per-row reset is not the end of a card; its bottom border is.
+    # Leave fenced code and incomplete boxes to the normal Markdown renderer.
+    lines = (text or "").splitlines(keepends=True)
+    plain_lines = [_rich_text_from_ansi(line).plain.rstrip("\r\n") for line in lines]
+    renderables = []
+    prose_start = 0
+    fence = None
+    i = 0
+    while i < len(lines):
+        plain_line = plain_lines[i]
+        fence_match = re.match(r"^ {0,3}(`{3,}|~{3,})", plain_line)
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) + r"{" + str(fence[1]) + r",}\s*", plain_line):
+                fence = None
+            i += 1
+            continue
+        if fence_match:
+            marker = fence_match.group(1)
+            fence = (marker[0], len(marker))
+            i += 1
+            continue
+        top = re.fullmatch(r"([╭┌])(─+)([╮┐])", plain_line)
+        if top and (top[1], top[3]) in (("╭", "╮"), ("┌", "┐")):
+            bottom = ("╰" if top[1] == "╭" else "└") + top[2] + ("╯" if top[3] == "╮" else "┘")
+            end = i + 1
+            while end < len(lines) and re.fullmatch(r"│.*│", plain_lines[end]):
+                end += 1
+            if end > i + 1 and end < len(lines) and plain_lines[end] == bottom:
+                prose = "".join(lines[prose_start:i]).strip("\r\n")
+                if prose.strip():
+                    prose = _preserve_windows_dot_segments_for_markdown(_rich_text_from_ansi(prose).plain)
+                    renderables.append(Markdown(realign_markdown_tables(prose, panel_width)))
+                renderables.append(_rich_text_from_ansi("".join(lines[i:end + 1]).rstrip("\r\n")))
+                i = end + 1
+                prose_start = i
+                continue
+        i += 1
+    if renderables:
         from rich.console import Group
 
-        parts = re.split(r"(?m)(?=^(?:\x1b\[[0-9;]*m)+[╭┌])", text)
-        if len(parts) > 1:
-            renderables = []
-            for part in parts:
-                card = re.match(r"(?s)(.*?\x1b\[0m)(?=\n|$)", part) if part.startswith("\x1b[") else None
-                if card:
-                    renderables.append(_rich_text_from_ansi(card.group(1)))
-                    remainder = part[card.end():].strip("\n")
-                    if remainder:
-                        renderables.append(Markdown(remainder))
-                elif part.strip():
-                    renderables.append(Markdown(part.strip("\n")))
-            return Group(*renderables)
+        remainder = "".join(lines[prose_start:]).strip("\r\n")
+        if remainder.strip():
+            remainder = _preserve_windows_dot_segments_for_markdown(_rich_text_from_ansi(remainder).plain)
+            renderables.append(Markdown(realign_markdown_tables(remainder, panel_width)))
+        return Group(*renderables)
 
     # Normalising under-padded tables up front gives narrow-panel fallbacks consistent input.
     plain = _rich_text_from_ansi(text or "").plain

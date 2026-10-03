@@ -5,6 +5,7 @@ import time
 
 from plugins.memory.honcho import HonchoMemoryProvider
 from plugins.memory.honcho.client import HonchoClientConfig
+from tests.plugins.test_honcho_current_query import grounded
 
 class RecallManager:
     def __init__(self):
@@ -19,9 +20,9 @@ class RecallManager:
     def pop_context_result(self, session):
         return self.pending_context.pop(session, None)
 
-    def get_prefetch_context(self, session, query, **kwargs):
+    def get_grounded_context(self, session, query, **kwargs):
         self.queries.append((session, query))
-        return {"representation": f"base:{query}"}
+        return grounded(query)
 
     def dialectic_query(self, session, prompt, **kwargs):
         self.prompts.append((session, prompt, kwargs))
@@ -65,11 +66,11 @@ def test_two_queries_never_consume_previous_query_caches(tmp_path, monkeypatch):
     for turn, query in enumerate(("Plan the garden", "Debug the compiler"), 1):
         provider.on_turn_start(turn, query)
         result = provider.prefetch(query)
-        assert f"base:{query}" in result
+        assert query in result
         assert "STALE" not in result
         if turn == 2:
             assert "Plan the garden" not in result
-        assert query in provider._manager.prompts[-1][1]
+        assert provider._manager.prompts == []
         provider.queue_prefetch(query)
     assert provider._manager.queries == [("session-a", "Plan the garden"), ("session-a", "Debug the compiler")]
     assert provider._manager.queued == []
@@ -90,7 +91,7 @@ def test_timeout_keeps_single_flight_and_late_result_cannot_publish():
         assert release.wait(3)
         return {"representation": "LATE OLD QUERY"}
 
-    provider._manager.get_prefetch_context = blocked
+    provider._manager.get_grounded_context = blocked
     provider._base_context_cache = "STALE"
     provider.on_turn_start(1, "Plan the garden")
     try:
@@ -112,7 +113,7 @@ def test_timeout_keeps_single_flight_and_late_result_cannot_publish():
     assert provider._manager.pending_context == {}
     assert provider._manager.prompts == []
     assert provider._last_context_turn == provider._last_dialectic_turn == -999
-    provider._manager.get_prefetch_context = lambda session, query, **kwargs: {"card": query}
+    provider._manager.get_grounded_context = lambda session, query, **kwargs: grounded(query)
     assert "Debug the compiler" in provider.prefetch("Debug the compiler")
 
     # Turn numbers can repeat after reset/rewind; only the operation generation owns results.
@@ -125,7 +126,7 @@ def test_timeout_keeps_single_flight_and_late_result_cannot_publish():
             invalidate()
             return {"card": "old generation"}
 
-        provider._manager.get_prefetch_context = superseded
+        provider._manager.get_grounded_context = superseded
         assert provider.prefetch("Plan the garden") == ""
         assert provider._last_context_turn == provider._last_dialectic_turn == -999
 
@@ -146,9 +147,27 @@ def test_prefetch_writes_the_injection_log(tmp_path):
     provider._injection_log_path = str(tmp_path / "injection.log")
     provider.on_turn_start(1, "Plan the garden")
     result = provider.prefetch("Plan the garden")
-    assert "base:Plan the garden" in result
+    assert "Plan the garden" in result
     assert provider.prefetch("Plan the garden") == ""
     records = [json.loads(line) for line in (tmp_path / "injection.log").read_text().splitlines()]
     assert [r["reason"] for r in records] == ["injected", "recall-sync-empty"]
     assert records[0]["payload"] == result and records[0]["turn"] == 1
     assert records[1]["payload"] == "" and records[1]["bytes"] == 0
+
+
+def test_recall_accepts_three_second_result_but_discards_after_five(monkeypatch):
+    from plugins.memory.honcho import recall_sync
+    for elapsed, accepted in [(3.0, True), (6.0, False)]:
+        clock = [100.0]
+        monkeypatch.setattr(recall_sync.time, "monotonic", lambda: clock[0])
+        provider = make_provider()
+        provider._config.timeout = 90
+        provider._FIRST_TURN_BASE_TIMEOUT = 5.0
+        def retrieve(session, query):
+            clock[0] += elapsed
+            return grounded(query)
+        provider._manager.get_grounded_context = retrieve
+        provider.on_turn_start(1, "Which relay port?")
+        result = provider.prefetch("Which relay port?")
+        assert bool(result) is accepted
+        provider._recall_sync_thread.join(2)

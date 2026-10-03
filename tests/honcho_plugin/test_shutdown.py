@@ -145,7 +145,7 @@ class TestProviderShutdown:
             release.wait(timeout=2)
             return {}
 
-        async_manager.get_prefetch_context = blocked
+        async_manager.get_grounded_context = blocked
         provider.on_turn_start(1, "what did we decide about the schema?")
         try:
             assert prefetch_sync(provider, "what did we decide about the schema?") == ""

@@ -83,7 +83,7 @@ class TestPeerLookupHelpers:
         assert kwargs["filters"] == {"peer_perspective": session.user_peer_id}
         # Assistant-authored messages are labeled so the model can tell
         # user-stated facts from assistant-derived ones.
-        assert "[assistant" in result
+        assert "assistant" in result and "m1" in result
 
 
     def test_create_conclusion_defaults_to_user_target(self):
@@ -482,72 +482,51 @@ class TestBaseContextSummary:
 
 
 
-    def test_timed_out_first_turn_context_surfaces_next_turn(self):
+    def test_timed_out_first_turn_context_is_not_replayed_on_pivot(self):
         import threading
-        import time
-
-        ready = threading.Event()
-        cached = {}
-        manager = MagicMock()
-
-        def get_context(*args, **kwargs):
-            ready.wait(timeout=1)
-            return {"representation": "late user context", "card": ""}
-
-        manager.get_prefetch_context.side_effect = get_context
-        manager.set_context_result.side_effect = (
-            lambda session_key, result: cached.__setitem__(session_key, result)
-        )
-        manager.pop_context_result.side_effect = (
-            lambda session_key: cached.pop(session_key, {})
-        )
-
-        provider = HonchoMemoryProvider()
-        provider._manager = manager
-        provider._config = SimpleNamespace(timeout=0.01, context_tokens=0)
-        provider._session_key = "test"
-        provider._session_initialized = True
-        provider._recall_mode = "context"
-        provider._turn_count = 1
-        provider._last_dialectic_turn = 0
-
-        assert provider.prefetch("first question") == ""
-        ready.set()
-
-        deadline = time.monotonic() + 1
-        while "test" not in cached and time.monotonic() < deadline:
-            time.sleep(0.01)
-
-        provider._turn_count = 2
-        assert "late user context" in provider.prefetch("follow-up question")
-
-    def test_later_turn_does_not_wait_for_in_flight_dialectic(self):
-        import threading
-        import time
-
+        from plugins.memory.honcho.client import HonchoClientConfig
         release = threading.Event()
+        manager = MagicMock()
+        def lookup(session, query, **kwargs):
+            if query == 'first question':
+                release.wait(1)
+                return {'representation': 'OLD_TOPIC'}
+            return {}
+        manager.get_grounded_context.side_effect = lookup
+        manager.pop_auth_notice.return_value = ''
+        manager.dialectic_query.return_value = ''
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(timeout=0.01)
+        provider._manager, provider._session_key = manager, 'test'
+        provider._session_initialized = True
+        provider._recall_mode = 'context'
+        provider.on_turn_start(1, 'first question')
+        assert provider.prefetch('first question') == ''
+        release.set()
+        provider._recall_sync_thread.join(1)
+        provider.on_turn_start(2, 'new unrelated question')
+        assert provider.prefetch('new unrelated question') == ''
+        manager.set_context_result.assert_not_called()
+
+    def test_later_turn_does_not_wait_for_in_flight_recall(self):
+        import threading
+        import time
         provider = HonchoMemoryProvider()
         provider._manager = MagicMock()
-        provider._manager.pop_context_result.return_value = {}
         provider._config = SimpleNamespace(timeout=10.0, context_tokens=0)
-        provider._session_key = "test"
+        provider._session_key = 'test'
         provider._session_initialized = True
-        provider._base_context_cache = ""
         provider._turn_count = 2
-        provider._last_dialectic_turn = 1
-        provider._prefetch_thread = threading.Thread(
-            target=lambda: release.wait(timeout=5), daemon=True
-        )
-        provider._prefetch_thread.start()
-        provider._prefetch_thread_started_at = time.monotonic()
-
+        release = threading.Event()
+        provider._recall_sync_thread = threading.Thread(target=lambda: release.wait(2), daemon=True)
+        provider._recall_sync_thread.start()
         try:
             started = time.perf_counter()
-            assert provider.prefetch("follow-up question") == ""
+            assert provider.prefetch('follow-up question') == ''
             assert time.perf_counter() - started < 0.2
         finally:
             release.set()
-            provider._prefetch_thread.join(timeout=1)
+            provider._recall_sync_thread.join(1)
 
 
 class TestDialecticDepth:
@@ -641,8 +620,8 @@ class TestTrivialPromptHeuristic:
 
 
 
-    def test_trivial_prompt_injects_ready_pending_dialectic(self):
-        """A trivial turn consumes a ready result without starting new work."""
+    def test_trivial_prompt_discards_ready_pending_dialectic(self):
+        """A trivial turn has no query signal and never injects previous prose."""
         provider = self._make_provider()
         provider._session_key = "test"
         provider._base_context_cache = ""  # isolate the supplement path
@@ -656,7 +635,7 @@ class TestTrivialPromptHeuristic:
 
         injected = provider.prefetch("ok")
 
-        assert "PENDING_DIALECTIC" in injected
+        assert injected == ""
         # And it was consumed, not left to go stale.
         with provider._prefetch_lock:
             assert provider._prefetch_result == ""
@@ -784,11 +763,9 @@ class TestDialecticLiveness:
         p._prefetch_thread_started_at = 0.0  # very old (1970 monotonic baseline)
 
         p.queue_prefetch("what changed in the repo today")
-        # New thread should have been spawned since stuck one is stale
-        assert p._prefetch_thread is not stuck, "stale thread must be recycled"
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=2.0)
-        assert p._manager.dialectic_query.call_count == 1
+        # Legacy end-of-turn work is disabled, even for a stale thread.
+        assert p._prefetch_thread is stuck
+        assert p._manager.dialectic_query.call_count == 0
         hold.set()
         stuck.join(timeout=2.0)
 
@@ -847,105 +824,33 @@ class TestDialecticLifecycleSmoke:
         )
 
     def test_full_multi_turn_session(self):
-        """Walks init → turns 1..8 → session end. Asserts at every step that
-        the plugin did exactly what it should and nothing more.
-
-        Uses dialecticCadence=3 so we can exercise skip-turns between fires
-        and the silent-failure retry path without their gates tripping each
-        other. Trivial + slash skips apply independent of cadence.
-        """
-        from unittest.mock import patch, MagicMock
-        provider, mgr, cfg = self._make_provider(
-            cfg_extra={"dialectic_cadence": 3}
-        )
-
-        # Program the dialectic responses in the exact order they'll be requested.
-        # An extra or missing call fails the test — strong smoke signal.
-        responses = iter([
-            "prewarm: user is eri, works on hermes",      # session-start prewarm
-            "cadence fire: long query synthesis",         # turn 4 queue_prefetch
-            "",                                           # turn 7 fire: silent failure
-            "retry success: fresh synthesis",             # turn 8 queue_prefetch retry
-        ])
-        mgr.dialectic_query.side_effect = lambda *a, **kw: next(responses)
-
-        # ---- init: prewarm fires ----
+        """Current queries replace generic prewarm while session writes still flush."""
+        from unittest.mock import patch
+        provider, mgr, cfg = self._make_provider(cfg_extra={"dialectic_cadence": 3})
+        from tests.plugins.test_honcho_current_query import grounded
+        mgr.get_grounded_context.side_effect = lambda session, query, **kw: grounded(query)
+        mgr.dialectic_query.return_value = 'query-grounded synthesis'
+        mgr.pop_auth_notice.return_value = ''
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mgr), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
-            provider.initialize(session_id="smoke-test")
-
-        self._await_thread(provider)
-        with provider._prefetch_lock:
-            assert provider._prefetch_result.startswith("prewarm"), \
-                "session-start prewarm must land in _prefetch_result"
-        assert provider._last_dialectic_turn == 0, "prewarm marks turn 0"
-        assert mgr.dialectic_query.call_count == 1
-
-        # ---- turn 1: consume prewarm, no duplicate dialectic ----
-        provider.on_turn_start(1, "hey")
-        inject1 = provider.prefetch("hey")
-        assert "prewarm" in inject1, "turn 1 must surface prewarm"
-        provider.sync_turn("hey", "hi there")
-        provider.queue_prefetch("hey")  # cadence gate: (1-0)<3 → skip
-        self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 1, \
-            "turn 1 must not fire — prewarm covered it and cadence skips"
-
-        # ---- turn 2: trivial 'ok' → skip everything ----
-        mgr.prefetch_context.reset_mock()
-        provider.on_turn_start(2, "ok")
-        assert provider.prefetch("ok") == "", "trivial prompt must short-circuit injection"
-        provider.sync_turn("ok", "cool")
-        provider.queue_prefetch("ok")
-        self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 1, "trivial must not fire dialectic"
-        assert mgr.prefetch_context.call_count == 0, "trivial must not fire context refresh"
-
-        # ---- turn 3: slash '/help' → also skip ----
-        provider.on_turn_start(3, "/help")
-        assert provider.prefetch("/help") == ""
-        provider.queue_prefetch("/help")
-        assert mgr.dialectic_query.call_count == 1
-
-        # ---- turn 4: long query → cadence fires + heuristic bumps ----
-        long_q = "walk me through " + ("x " * 100)  # ~200 chars → heuristic +1
-        provider.on_turn_start(4, long_q)
-        provider.prefetch(long_q)
-        provider.sync_turn(long_q, "sure")
-        provider.queue_prefetch(long_q)  # (4-0)≥3 → fires
-        self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 2, "turn 4 cadence fire"
-        _, kwargs = mgr.dialectic_query.call_args
-        assert kwargs.get("reasoning_level") in {"medium", "high"}, \
-            f"long query must bump reasoning level above 'low'; got {kwargs.get('reasoning_level')}"
-        assert provider._last_dialectic_turn == 4, "cadence tracker advances on success"
-
-        # ---- turns 5–6: cadence cooldown, no fires ----
-        for t in (5, 6):
-            provider.on_turn_start(t, "tell me more")
-            provider.queue_prefetch("tell me more")
-            self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 2, "turns 5–6 blocked by cadence window"
-
-        # ---- turn 7: fires but silent failure (empty dialectic) ----
-        provider.on_turn_start(7, "and then what")
-        provider.queue_prefetch("and then what")  # (7-4)≥3 → fires
-        self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 3, "turn 7 fires"
-        assert provider._last_dialectic_turn == 4, \
-            "silent failure must NOT burn the cadence window"
-
-        # ---- turn 8: retries because cadence didn't advance ----
-        provider.on_turn_start(8, "try again")
-        provider.queue_prefetch("try again")  # (8-4)≥3 → fires again
-        self._await_thread(provider)
-        assert mgr.dialectic_query.call_count == 4, \
-            "turn 8 retries because turn 7's empty result didn't advance cadence"
-        assert provider._last_dialectic_turn == 8, "retry success advances"
-
-        # ---- session end: flush messages ----
+            provider.initialize(session_id='smoke-test')
+        if provider._init_thread:
+            provider._init_thread.join(2)
+        assert mgr.dialectic_query.call_count == 0
+        for turn, query in enumerate(('Debug the relay', 'ok', '/help', 'Which ComfyUI model roots are read?'), 1):
+            provider.on_turn_start(turn, query)
+            result = provider.prefetch(query)
+            if query in ('ok', '/help'):
+                assert result == ''
+            else:
+                assert query in result
+                assert 'prewarm' not in result
+            before = mgr.dialectic_query.call_count
+            provider.queue_prefetch(query)
+            assert mgr.dialectic_query.call_count == before
+            provider.sync_turn(query, 'response')
         provider.on_session_end([])
         mgr.flush_all.assert_called()
 

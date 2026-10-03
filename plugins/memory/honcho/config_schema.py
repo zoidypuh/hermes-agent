@@ -108,6 +108,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                default="false", group="Recall"),
         _field("contextTokens", "Context token cap", KIND_NUMBER, "Cap on auto-injected context tokens. Blank leaves it uncapped.",
                placeholder="(uncapped)", group="Recall"),
+        _field("maxInjectedObservations", "Maximum recalled facts", KIND_NUMBER,
+               "Maximum facts injected on a new turn; hard maximum 3. Zero disables injection.", default="3", group="Recall"),
+        _field("memoryObservationMaxChars", "Recall character budget", KIND_NUMBER,
+               "Total serialized observations, including citations; hard maximum 650. Quotes are never cut mid-claim.",
+               default="650", group="Recall"),
+        _field("selectionMode", "Relevance selection", KIND_SELECT,
+               "Semantic selection uses auxiliary.memory_selection. Missing route, timeout or no relevant facts injects nothing.",
+               default="lexical", options=_opts(("lexical", "Conservative lexical"), ("semantic", "Semantic selection")), group="Recall"),
+        _field("excludedConclusionIds", "Superseded conclusions", KIND_JSON,
+               "Source IDs excluded from automatic recall after review. History remains available through tools.",
+               placeholder="[]", group="Recall"),
         # The plugin reads `injection` as one object, so the panel edits the whole block rather than a nested key.
         _field("injection", "Session-start injection", KIND_JSON,
                "Pin which base-context sections the first turn injects: summary, peerRepresentation, peerCard, "

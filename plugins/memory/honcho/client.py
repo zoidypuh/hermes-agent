@@ -309,6 +309,10 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         "save_messages": look.pick_set("saveMessages", True),
         "write_frequency": write_frequency,
         "context_tokens": look.parsed("contextTokens", int, None),
+        "max_injected_observations": look.parsed("maxInjectedObservations", lambda v: max(0, min(3, int(v))), 3),
+        "memory_observation_max_chars": look.parsed("memoryObservationMaxChars", lambda v: max(0, min(650, int(v))), 650),
+        "selection_mode": "semantic" if look.pick("selectionMode") == "semantic" else "lexical",
+        "excluded_conclusion_ids": look.parsed("excludedConclusionIds", lambda v: [s for s in v if isinstance(s, str)] if isinstance(v, list) else [], []),
         "dialectic_reasoning_level": look.pick("dialecticReasoningLevel") or "low",
         "dialectic_dynamic": look.flag("dialecticDynamic", default=True),
         "dialectic_max_chars": look.parsed("dialecticMaxChars", int, 600),
@@ -363,6 +367,10 @@ class HonchoClientConfig:
     save_messages: bool = True
     write_frequency: str | int = "async"  # "async" | "turn" | "session" | every-N-turns int
     context_tokens: int | None = None  # prefetch budget; None = uncapped
+    max_injected_observations: int = 3  # hard maximum; operator may lower
+    memory_observation_max_chars: int = 650  # total serialized observation characters
+    selection_mode: str = "lexical"  # semantic uses explicit auxiliary.memory_selection route
+    excluded_conclusion_ids: list[str] = field(default_factory=list)
     # Dialectic (peer.chat) settings
     dialectic_reasoning_level: str = "low"  # minimal | low | medium | high | max
     dialectic_dynamic: bool = True  # model may override the level via honcho_reasoning

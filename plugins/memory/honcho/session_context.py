@@ -126,6 +126,8 @@ class SessionContextMixin:
         """Pre-fetch user + AI peer context (representation, card) plus the session summary.
         ``user_message`` is passed as search_query so Honcho returns topic-relevant conclusions.
         Stops early (returning what it has) once auth is dead."""
+        if current_query_only and not (user_message or "").strip():
+            return {}
         session = self._cached_session(session_key)
         if not session:
             return {}
@@ -148,9 +150,12 @@ class SessionContextMixin:
                 # or failed current-query lookup must not silently become generic recall.
                 ctx = self._authed_call("peer context fetch", lambda: self._get_or_create_peer(observer_peer_id).context(
                     search_query=user_message, target=target_peer_id or session.user_peer_id,
+                    include_most_frequent=False,
                 ))
                 result["representation"] = getattr(ctx, "representation", None) or getattr(ctx, "peer_representation", None) or ""
-                result["card"] = "\n".join(self._normalize_card(getattr(ctx, "peer_card", None)))
+                # Peer cards are stable snapshots, not query-ranked evidence.
+                # They remain available through explicit profile/context tools.
+                result["card"] = ""
                 return
             result["representation"], result["card"] = self._peer_context_strings(
                 observer_peer_id, search_query=user_message or None, target=target_peer_id or session.user_peer_id,
@@ -160,11 +165,15 @@ class SessionContextMixin:
             result["ai_representation"], result["ai_card"] = self._peer_context_strings(
                 session.assistant_peer_id, target=session.assistant_peer_id,
             )
-        for step, level, msg in (
+        # Automatic current-query recall must not add a generic summary or AI
+        # identity when the scoped lookup has no evidence. Explicit context tools
+        # retain their broad snapshot semantics.
+        steps = ((_user, logging.WARNING, "Failed to fetch user context from Honcho: %s"),) if current_query_only else (
             (_summary, logging.DEBUG, "Failed to fetch session summary from Honcho: %s"),
             (_user, logging.WARNING, "Failed to fetch user context from Honcho: %s"),
             (_ai, logging.DEBUG, "Failed to fetch AI peer context from Honcho: %s"),
-        ):
+        )
+        for step, level, msg in steps:
             try:
                 step()
             except HonchoAuthError:
@@ -176,6 +185,36 @@ class SessionContextMixin:
                     raise
                 logger.log(level, msg, e)
         return result
+
+    def get_grounded_context(self, session_key: str, query: str) -> dict:
+        """Query-ranked conclusions from the current observer/subject only.
+
+        Conclusion IDs identify persisted evidence, not newly synthesized prose.
+        Raw conversation remains available through search; commands in it must
+        not be promoted to standing facts by automatic recall.
+        """
+        session = self._cached_session(session_key)
+        if not session or not query.strip():
+            return {}
+        observer, target = self._resolve_observer_target(session, 'user')
+        target = target or session.user_peer_id
+        messages = self._authed_call('grounded conclusion search', lambda: self._conclusions_scope(
+            session, target).query(query[:4000], top_k=12, distance=0.45))
+        sources = []
+        for message in messages:
+            if getattr(message, 'observed_id', None) != target or getattr(message, 'observer_id', None) != observer:
+                continue
+            sources.append({key: getattr(message, key, None) for key in (
+                'id', 'content', 'observer_id', 'session_id', 'created_at')})
+            sources[-1].update(workspace_id=self._config.workspace_id, peer_id=target,
+                               metadata={'kind': 'conclusion'})
+            sources[-1]['created_at'] = str(sources[-1]['created_at'] or '')
+        return dict(schema='honcho-evidence-v1', workspace=self._config.workspace_id,
+                    peer=target, observer=observer, query=query, sources=sources,
+                    excluded_ids=getattr(self._config, 'excluded_conclusion_ids', []),
+                    selection_mode=getattr(self._config, 'selection_mode', 'lexical'),
+                    max_observations=getattr(self._config, 'max_injected_observations', 3),
+                    max_chars=getattr(self._config, 'memory_observation_max_chars', 650))
 
     def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
         """Fetch session-level context (summary, representation, card, recent messages).
@@ -253,7 +292,9 @@ class SessionContextMixin:
             author = getattr(m, "peer_id", "") or "unknown"
             who = "assistant" if author == session.assistant_peer_id else author
             sess = getattr(m, "session_id", "") or ""
-            entry = f"[{who}{f' · {sess}' if sess else ''}] {content[:1200]}"
+            source_id = getattr(m, 'id', '') or ''
+            observed = str(getattr(m, 'created_at', '') or '')[:10]
+            entry = f"[{source_id} · {observed} · {who}{f' · {sess}' if sess else ''}] {content[:1200]}"
             # Budget left after the joined snippets so far plus the separator this entry would need.
             remaining = char_budget - len("\n\n".join(lines)) - (2 if lines else 0)
             if remaining <= 0:

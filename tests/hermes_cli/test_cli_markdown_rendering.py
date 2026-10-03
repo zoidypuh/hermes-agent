@@ -2,6 +2,58 @@ from io import StringIO
 
 from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.panel import Panel
+
+import pytest
+
+
+PLAIN_TIP_CARD = (
+    "╭──────────────────────────────────────────────╮\n"
+    "│ 🧠  DOPUS  Ctrl+T / Ctrl+W / Ctrl+Tab        │\n"
+    "│ Ctrl+T neuer Tab, Ctrl+W schließt ihn.       │\n"
+    "│ Ctrl+Tab zweimal pendelt zwischen den        │\n"
+    "│ letzten zwei Tabs.                           │\n"
+    "╰──────────────────────────────────────────────╯"
+)
+
+
+@pytest.mark.parametrize("width", [64, 80, 123])
+@pytest.mark.parametrize("prefix", ["", "**Hello**\n\n", "TL;DR\n- verified\n"])
+def test_plain_tip_card_keeps_separate_rows_inside_response_panel(width, prefix):
+    renderable = _render_final_assistant_content(prefix + PLAIN_TIP_CARD)
+    output = StringIO()
+    Console(file=output, width=width, force_terminal=False, color_system=None).print(
+        Panel(renderable, padding=(1, 1))
+    )
+    rows = output.getvalue().splitlines()
+    for card_row in PLAIN_TIP_CARD.splitlines():
+        assert any(card_row in row for row in rows), output.getvalue()
+    if prefix:
+        assert "**Hello**" not in output.getvalue()
+
+
+def test_per_row_ansi_tip_card_keeps_every_row_and_background():
+    card = "\n".join("\x1b[103m\x1b[30m" + row + "\x1b[0m" for row in PLAIN_TIP_CARD.splitlines())
+    output = StringIO()
+    Console(file=output, width=80, force_terminal=True, color_system="standard").print(
+        Panel(_render_final_assistant_content("**Before**\n\n" + card + "\n\n**After**"))
+    )
+    from rich.text import Text
+    rows = Text.from_ansi(output.getvalue()).plain.splitlines()
+    for card_row in PLAIN_TIP_CARD.splitlines():
+        assert any(card_row in row for row in rows), output.getvalue()
+    assert "\x1b[30;103m" in output.getvalue()
+    assert "**Before**" not in output.getvalue()
+    assert "**After**" not in output.getvalue()
+
+
+@pytest.mark.parametrize("content", [
+    "╭────╮\nnot a card\n╰────╯",
+    "╭────╮\n│ tip│",
+    "```text\n" + PLAIN_TIP_CARD + "\n```",
+])
+def test_non_card_or_fenced_card_keeps_markdown_rendering(content):
+    assert isinstance(_render_final_assistant_content(content), Markdown)
 
 from cli import _render_final_assistant_content
 

@@ -1,0 +1,1684 @@
+{
+  "basis": "Card 02 (t_5571e388) reproduced defects: inert configured limits, generic fallback on empty/error, topic-blind cache, dialectic omitting the current query, authoritative wrapper without relevance gate, stale broad injection.",
+  "card": "t_7091555a (03 Build a labeled context-selection evaluation set)",
+  "cases": [
+    {
+      "case_id": "hc-01",
+      "category": "honcho-debugging",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "inert_limits",
+        "authoritative_wrapper",
+        "cross_topic_cache"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-hc01-a",
+          "tier": "required"
+        },
+        {
+          "id": "src-hc01-b",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-hc01-c",
+          "reason": "stale unrelated preference"
+        },
+        {
+          "id": "src-hc01-d",
+          "reason": "off-topic (cooking) must not answer a honcho question"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-hc01-a",
+          "src-hc01-b",
+          "src-hc01-c",
+          "src-hc01-d"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "The injected memory block is way bigger than the configured observation limit. Why is the limit not enforced?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Configured knobs maxInjectedObservations, memoryObservationMaxChars, briefIncludeSummary and briefIncludeCard have no reader in the current checkout; they are inert.",
+          "id": "src-hc01-a",
+          "topic": "honcho"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "The effective cap is roughly 4 characters per configured context token; 2000 context tokens allow about 8000 characters.",
+          "id": "src-hc01-b",
+          "topic": "honcho"
+        },
+        {
+          "as_of": "2026-06-01",
+          "class": "stale",
+          "fact": "The user prefers responses in Spanish.",
+          "id": "src-hc01-c",
+          "topic": "preference"
+        },
+        {
+          "as_of": "2026-09-30",
+          "class": "current",
+          "fact": "Air fryer recipe: preheat 180C, 12 minutes.",
+          "id": "src-hc01-d",
+          "topic": "cooking"
+        }
+      ],
+      "title": "why-did-injection-exceed-cap"
+    },
+    {
+      "case_id": "hc-02",
+      "category": "honcho-debugging",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "stale_current_preference"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-hc02-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-hc02-b",
+          "reason": "pre-containment state, superseded"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-hc02-a",
+          "src-hc02-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "Is automatic memory recall currently enabled for this profile?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Active recall mode is tools-only; automatic recall is disabled.",
+          "id": "src-hc02-a",
+          "topic": "honcho"
+        },
+        {
+          "as_of": "2026-09-20",
+          "class": "stale",
+          "fact": "Recall mode is hybrid with every-turn injection.",
+          "id": "src-hc02-b",
+          "topic": "honcho"
+        }
+      ],
+      "title": "is-automatic-recall-enabled"
+    },
+    {
+      "case_id": "gr-01",
+      "category": "goblin-relay",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "stale_fact_injection"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-gr01-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-gr01-b",
+          "reason": "stale name and port, superseded"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-gr01-a",
+          "src-gr01-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "Which ports does the voice relay app use for static and relay?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-20",
+          "class": "current",
+          "fact": "Voice relay app: beta build static 8867 / relay 8868; stable build static 8767 / relay 8768.",
+          "id": "src-gr01-a",
+          "topic": "goblin-relay"
+        },
+        {
+          "as_of": "2026-08-01",
+          "class": "stale",
+          "fact": "The app was named Gobling and used port 9999.",
+          "id": "src-gr01-b",
+          "topic": "goblin-relay"
+        }
+      ],
+      "title": "voice-app-ports"
+    },
+    {
+      "case_id": "gr-02",
+      "category": "goblin-relay",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "cross_topic_cache"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-gr02-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-gr02-b",
+          "reason": "off-topic (comfyui) must not appear for a voice-app question"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-gr02-a",
+          "src-gr02-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "What does toggle mode of the voice app do?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-18",
+          "class": "current",
+          "fact": "Toggle mode allows sending a message without the 'Stopped. Tap the avatar to speak again' error.",
+          "id": "src-gr02-a",
+          "topic": "goblin-relay"
+        },
+        {
+          "as_of": "2026-09-25",
+          "class": "current",
+          "fact": "ComfyUI model root is the shared library.",
+          "id": "src-gr02-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "toggle-mode"
+    },
+    {
+      "case_id": "cu-01",
+      "category": "comfyui",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "stale_fact_injection",
+        "authoritative_wrapper"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-cu01-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-cu01-b",
+          "reason": "WSL checkout removed 2026-09-25; stale path must not be injected as current"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-cu01-a",
+          "src-cu01-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "Which ComfyUI model roots are currently read?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "Model roots: <home>/ComfyDesktop/ComfyUI/models and <home>/ComfyUI-Shared/models.",
+          "id": "src-cu01-a",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-07-01",
+          "class": "stale",
+          "fact": "The WSL checkout <home>/ComfyUI is an additional model root.",
+          "id": "src-cu01-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "which-model-roots-are-read"
+    },
+    {
+      "case_id": "cu-02",
+      "category": "comfyui",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "positive_control"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-cu02-a",
+          "tier": "required"
+        },
+        {
+          "id": "src-cu02-b",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-cu02-a",
+          "src-cu02-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "Where are the saved workflows and the character projects stored?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "Workflows: <home>/ComfyDesktop/ComfyUI/user/default/workflows.",
+          "id": "src-cu02-a",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "Character projects and working I/O: <home>/_comfy.",
+          "id": "src-cu02-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "workflow-and-project-locations"
+    },
+    {
+      "case_id": "uq-01",
+      "category": "unrelated-question",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "generic_fallback_on_no_match"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "no-match must not fall back to a generic representation"
+        },
+        {
+          "id": "src-uq01-a",
+          "reason": "no stored fact is relevant to espresso machines"
+        },
+        {
+          "id": "src-uq01-b",
+          "reason": "no stored fact is relevant to espresso machines"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-uq01-a",
+          "src-uq01-b"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "How do I descale my espresso machine?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI model root is the shared library.",
+          "id": "src-uq01-a",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-18",
+          "class": "current",
+          "fact": "Voice app toggle mode behavior.",
+          "id": "src-uq01-b",
+          "topic": "goblin-relay"
+        }
+      ],
+      "title": "espresso-machine"
+    },
+    {
+      "case_id": "uq-02",
+      "category": "unrelated-question",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "generic_fallback_on_no_match"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "no-match must not fall back to a generic representation"
+        },
+        {
+          "id": "src-uq02-a",
+          "reason": "no stored fact is relevant to weather"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-uq02-a"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "What is the weather like tomorrow?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Honcho recall mode is tools-only.",
+          "id": "src-uq02-a",
+          "topic": "honcho"
+        }
+      ],
+      "title": "weather-tomorrow"
+    },
+    {
+      "case_id": "af-01",
+      "category": "ambiguous-followup",
+      "clarification_allowed": true,
+      "defect_probes": [
+        "dialectic_omits_current_query"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-af01-a",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-af01-b",
+          "tier": "acceptable"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-af01-a",
+          "src-af01-b"
+        ]
+      },
+      "pass_rule": "clarification_asked OR (src-af01-a present AND src-af01-b present); picking exactly one silently fails",
+      "session": {
+        "history": [
+          {
+            "content": "What context window does the local GPU model use?",
+            "role": "user"
+          }
+        ],
+        "query": "And the other one?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "GPU local model: 163840-token context window.",
+          "id": "src-af01-a",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Mac local model: 262144-token context window.",
+          "id": "src-af01-b",
+          "topic": "models"
+        }
+      ],
+      "title": "which-local-model-do-you-mean"
+    },
+    {
+      "case_id": "af-02",
+      "category": "ambiguous-followup",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "cache_topic_pivot"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-af02-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-af02-b",
+          "reason": "prior-turn topic (GPU box); must not be the answer for the Mac"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-af02-a",
+          "src-af02-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [
+          {
+            "content": "What is the default model on the GPU box?",
+            "role": "user"
+          }
+        ],
+        "query": "Same question for the Mac."
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Mac default: local 27B splash build.",
+          "id": "src-af02-a",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "GPU default: local 27B via proxy alias, xhigh reasoning.",
+          "id": "src-af02-b",
+          "topic": "models"
+        }
+      ],
+      "title": "same-question-for-the-mac"
+    },
+    {
+      "case_id": "nm-01",
+      "category": "no-match",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "generic_fallback_on_no_match"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "no-match must not fall back to a generic representation"
+        },
+        {
+          "id": "src-nm01-a",
+          "reason": "vehicle fact is not a garage door sensor"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-nm01-a"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "How do I install a garage door sensor?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-09-30",
+          "class": "current",
+          "fact": "Owned vehicle: 2024 sedan, service history on file.",
+          "id": "src-nm01-a",
+          "topic": "vehicle"
+        }
+      ],
+      "title": "garage-door-sensor"
+    },
+    {
+      "case_id": "nm-02",
+      "category": "no-match",
+      "clarification_allowed": true,
+      "defect_probes": [
+        "near_miss_resolution"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-nm02-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "a near-miss must resolve to the real fact or a clean no-match/clarification, never a generic fallback"
+        },
+        {
+          "id": "src-nm02-b",
+          "reason": "near-miss must never resolve to the stale sibling path"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-nm02-a",
+          "src-nm02-b"
+        ]
+      },
+      "pass_rule": "src-nm02-a present OR clarification_asked",
+      "session": {
+        "history": [],
+        "query": "What is the path for ComfyUI Share?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "Shared model library: <home>/ComfyUI-Shared/models.",
+          "id": "src-nm02-a",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-07-01",
+          "class": "stale",
+          "fact": "Model root <home>/ComfyUI (WSL).",
+          "id": "src-nm02-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "near-miss-spelling"
+    },
+    {
+      "case_id": "rf-01",
+      "category": "retrieval-failure",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "generic_fallback_on_error"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": "backend_error",
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "card-02 defect: an ordinary retrieval error must not fall back to the generic representation/card"
+        },
+        {
+          "id": "src-rf01-a",
+          "reason": "backend error injected; the fact is unreachable in this turn"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-rf01-a"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "What are my standing preferences for recipe notes?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-09-22",
+          "class": "current",
+          "fact": "Recipe notes in a scannable format with separate Ingredients and Method sections.",
+          "id": "src-rf01-a",
+          "topic": "preference"
+        }
+      ],
+      "title": "backend-error-during-retrieval"
+    },
+    {
+      "case_id": "rf-02",
+      "category": "retrieval-failure",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "cache_empty_refresh_keeps_prior_base"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": "timeout_with_stale_cache",
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "timeout must not fall back to a generic representation"
+        },
+        {
+          "id": "src-rf02-a",
+          "reason": "timeout injected; the fresh fact is unreachable in this turn"
+        },
+        {
+          "id": "src-rf02-c",
+          "reason": "card-02 defect: a stale cached base must not be served as the answer on a failed refresh"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-rf02-a",
+          "src-rf02-c"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "Which model is the default for the intern profile?"
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Intern profile default: local 27B via proxy alias, xhigh reasoning.",
+          "id": "src-rf02-a",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-09-23",
+          "class": "stale_cached",
+          "fact": "Default was the splash build. (leftover from a prior turn's cached base)",
+          "id": "src-rf02-c",
+          "topic": "models"
+        }
+      ],
+      "title": "timeout-with-stale-cache"
+    },
+    {
+      "case_id": "st-01",
+      "category": "stale-facts",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "stale_fact_injection",
+        "authoritative_wrapper"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-st01-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-st01-b",
+          "reason": "describes a removed checkout; injecting it as current would be a false answer"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-st01-a",
+          "src-st01-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "Can I still add models to the WSL ComfyUI folder?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-25",
+          "class": "current",
+          "fact": "The WSL ComfyUI checkout was removed on 2026-09-25, including the models that were only there.",
+          "id": "src-st01-a",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-06-01",
+          "class": "stale",
+          "fact": "WSL ComfyUI at <home>/ComfyUI is a working model root.",
+          "id": "src-st01-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "removed-wsl-checkout"
+    },
+    {
+      "case_id": "st-02",
+      "category": "stale-facts",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "conflict_resolution_by_recency",
+        "stale_current_preference"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-st02-c",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-st02-a",
+          "reason": "superseded default, must not be injected as current"
+        },
+        {
+          "id": "src-st02-b",
+          "reason": "superseded default, must not be injected as current"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-st02-a",
+          "src-st02-b",
+          "src-st02-c"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "What is the current default model for the intern profile?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-15",
+          "class": "stale",
+          "fact": "Default was the mtplx abliterated build.",
+          "id": "src-st02-a",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-09-23",
+          "class": "stale",
+          "fact": "Default was the splash build.",
+          "id": "src-st02-b",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Current default: local 27B via proxy alias, xhigh reasoning, 163840-token context.",
+          "id": "src-st02-c",
+          "topic": "models"
+        }
+      ],
+      "title": "superseded-default-model"
+    },
+    {
+      "case_id": "cf-01",
+      "category": "conflicting-facts",
+      "clarification_allowed": true,
+      "defect_probes": [
+        "conflict_unsurfaced"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-cf01-a",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-cf01-b",
+          "tier": "acceptable"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-cf01-a",
+          "src-cf01-b"
+        ]
+      },
+      "pass_rule": "clarification_asked OR (both src-cf01-a and src-cf01-b present AND conflict_flagged); silently presenting one as fact fails",
+      "session": {
+        "history": [],
+        "query": "What port does the beta relay use?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-20",
+          "class": "conflicting",
+          "fact": "Beta relay port 8868.",
+          "id": "src-cf01-a",
+          "topic": "goblin-relay"
+        },
+        {
+          "as_of": "2026-09-28",
+          "class": "conflicting",
+          "fact": "Beta relay port 9123.",
+          "id": "src-cf01-b",
+          "topic": "goblin-relay"
+        }
+      ],
+      "title": "two-current-sources-disagree"
+    },
+    {
+      "case_id": "cf-02",
+      "category": "conflicting-facts",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "stale_vs_fresh"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-cf02-b",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-cf02-a",
+          "reason": "older hardware value, superseded; must not be injected as current"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-cf02-a",
+          "src-cf02-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [],
+        "query": "How much unified memory does the Mac have?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-05-01",
+          "class": "stale",
+          "fact": "Mac has 64GB unified memory.",
+          "id": "src-cf02-a",
+          "topic": "hardware"
+        },
+        {
+          "as_of": "2026-09-01",
+          "class": "current",
+          "fact": "Mac has 128GB unified memory.",
+          "id": "src-cf02-b",
+          "topic": "hardware"
+        }
+      ],
+      "title": "stale-vs-fresh-hardware"
+    },
+    {
+      "case_id": "rf-03",
+      "category": "retrieval-failure",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "generic_fallback_on_error",
+        "dialectic_omits_current_query"
+      ],
+      "empty_injection_expected": true,
+      "expected_facts": [],
+      "failure_injection": "empty_lookup",
+      "forbidden_facts": [
+        {
+          "id": "gen-repr",
+          "reason": "card-02 defect: an empty lookup result must not fall back to the generic representation/card"
+        },
+        {
+          "id": "src-rf03-a",
+          "reason": "empty lookup injected; the fact is unreachable in this turn"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "gen-repr",
+          "src-rf03-a"
+        ]
+      },
+      "pass_rule": "empty injection",
+      "session": {
+        "history": [],
+        "query": "Tell me about the relay app again."
+      },
+      "sources": [
+        {
+          "as_of": "n/a",
+          "class": "forbidden_payload",
+          "fact": "Generic peer representation / card fallback payload (must never be injected on no-match, error or timeout).",
+          "id": "gen-repr",
+          "topic": "fallback"
+        },
+        {
+          "as_of": "2026-09-20",
+          "class": "current",
+          "fact": "Voice relay app: beta build static 8867 / relay 8868.",
+          "id": "src-rf03-a",
+          "topic": "goblin-relay"
+        }
+      ],
+      "title": "empty-lookup-falls-back-to-generic"
+    },
+    {
+      "case_id": "hc-03",
+      "category": "honcho-debugging",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "cache_topic_pivot"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-hc03-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-hc03-b",
+          "reason": "card-02 defect: cached base from the prior (comfyui) turn must not be served as the answer after a topic pivot"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-hc03-a",
+          "src-hc03-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [
+          {
+            "content": "Which ComfyUI model roots are read?",
+            "role": "user"
+          }
+        ],
+        "query": "Now: what is the recall mode?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Active recall mode is tools-only.",
+          "id": "src-hc03-a",
+          "topic": "honcho"
+        },
+        {
+          "as_of": "2026-09-20",
+          "class": "current",
+          "fact": "ComfyUI model roots: desktop tree plus shared library.",
+          "id": "src-hc03-b",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "topic-pivot-keeps-prior-base"
+    },
+    {
+      "case_id": "af-03",
+      "category": "ambiguous-followup",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "dialectic_omits_current_query"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-af03-a",
+          "tier": "required"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [
+        {
+          "id": "src-af03-b",
+          "reason": "the question asks which is THE default; injecting the superseded option as co-equal without the query context fails"
+        }
+      ],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-af03-a",
+          "src-af03-b"
+        ]
+      },
+      "pass_rule": "all required present, zero forbidden",
+      "session": {
+        "history": [
+          {
+            "content": "We run the 27B via proxy alias and also had the splash build.",
+            "role": "user"
+          }
+        ],
+        "query": "Which of the two is the default?"
+      },
+      "sources": [
+        {
+          "as_of": "2026-10-01",
+          "class": "current",
+          "fact": "Local 27B via proxy alias.",
+          "id": "src-af03-a",
+          "topic": "models"
+        },
+        {
+          "as_of": "2026-09-23",
+          "class": "stale",
+          "fact": "Local 27B splash build.",
+          "id": "src-af03-b",
+          "topic": "models"
+        }
+      ],
+      "title": "which-of-two-is-default"
+    },
+    {
+      "case_id": "hc-04",
+      "category": "honcho-debugging",
+      "clarification_allowed": false,
+      "defect_probes": [
+        "inert_limits",
+        "authoritative_wrapper"
+      ],
+      "empty_injection_expected": false,
+      "expected_facts": [
+        {
+          "id": "src-hc04-1",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-hc04-2",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-hc04-3",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-hc04-4",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-hc04-5",
+          "tier": "acceptable"
+        },
+        {
+          "id": "src-hc04-6",
+          "tier": "acceptable"
+        }
+      ],
+      "failure_injection": null,
+      "forbidden_facts": [],
+      "metrics": {
+        "freshness": {
+          "reference_date": "2026-10-01",
+          "rule": "class=stale must never be injected as current; class=conflicting requires a conflict flag or clarification",
+          "stale_never_current": true
+        },
+        "injection_size": {
+          "budget_chars": 2000,
+          "max_facts": 3,
+          "note": "legacy configured intent was 3 observations / 650 chars per fact; measure actual to expose the inert-limit defect"
+        },
+        "latency": {
+          "budget_ms": 2000,
+          "note": "retrieval + formatting only, excludes model generation"
+        },
+        "relevance": {
+          "min_tier_to_inject": "acceptable",
+          "scoring": "hard fail on any forbidden injected; fail on missing required (unless clarification allowed and asked)",
+          "tiers": "required|acceptable|forbidden"
+        },
+        "source_ids": [
+          "src-hc04-1",
+          "src-hc04-2",
+          "src-hc04-3",
+          "src-hc04-4",
+          "src-hc04-5",
+          "src-hc04-6"
+        ]
+      },
+      "pass_rule": "at most max_facts=3 facts injected AND total injection <= 2000 chars; all 6 injected is the labeled inert-limits failure",
+      "session": {
+        "history": [],
+        "query": "Summarize what you know about the ComfyUI setup."
+      },
+      "sources": [
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 1: model roots, workflows, custom nodes and I/O locations, part 1 of 6.",
+          "id": "src-hc04-1",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 2: model roots, workflows, custom nodes and I/O locations, part 2 of 6.",
+          "id": "src-hc04-2",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 3: model roots, workflows, custom nodes and I/O locations, part 3 of 6.",
+          "id": "src-hc04-3",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 4: model roots, workflows, custom nodes and I/O locations, part 4 of 6.",
+          "id": "src-hc04-4",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 5: model roots, workflows, custom nodes and I/O locations, part 5 of 6.",
+          "id": "src-hc04-5",
+          "topic": "comfyui"
+        },
+        {
+          "as_of": "2026-09-26",
+          "class": "current",
+          "fact": "ComfyUI fact 6: model roots, workflows, custom nodes and I/O locations, part 6 of 6.",
+          "id": "src-hc04-6",
+          "topic": "comfyui"
+        }
+      ],
+      "title": "broad-profile-injection-size"
+    }
+  ],
+  "categories": [
+    "honcho-debugging",
+    "goblin-relay",
+    "comfyui",
+    "unrelated-question",
+    "ambiguous-followup",
+    "no-match",
+    "retrieval-failure",
+    "stale-facts",
+    "conflicting-facts"
+  ],
+  "metric_schema": {
+    "freshness": "per-source as_of + class current|stale|stale_cached|conflicting|forbidden_payload; stale never injected as current; conflicting requires a conflict flag or clarification",
+    "injection_size": "budget_chars and max_facts; legacy intent was 3 observations / 650 chars per fact, measured actual exposes the inert-limit defect",
+    "latency": "budget_ms for retrieval + formatting only, excludes model generation",
+    "relevance": "per-fact tier required|acceptable|forbidden; hard fail on any forbidden injected, fail on missing required (clarification allowed per pass_rule)",
+    "source_ids": "every fixture source id declared for the case; injected facts are matched against these ids"
+  },
+  "pass_semantics": "A case passes only for a FIXED selector. The current (unfixed) pipeline is expected to fail most cases; those failures are the labeled baseline that cards 04/05/07 compare against. Degenerate baselines (always-inject / never-inject) must each fail this set on different cases, which is itself a validity check.",
+  "pii_free": true,
+  "reference_date": "2026-10-01",
+  "synthetic_only": true,
+  "version": "0.2"
+}

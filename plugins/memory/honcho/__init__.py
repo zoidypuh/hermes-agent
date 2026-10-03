@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import MemoryProvider, is_trivial_prompt
+from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
 from agent.coding_context import INTERACTIVE_CODING_PLATFORMS as _LOCAL_PLATFORMS
 from agent.turn_author import a2a_key
 from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
@@ -380,15 +380,14 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # Generic dialectic prewarm is incompatible with latest-message query rewriting,
-        # which needs the first substantive user message.
-        if self._recall_mode in {"context", "hybrid"} and not self._recall_sync:
-            if self._query_rewriter is None or not self._query_rewrite_enabled:
-                self._spawn_dialectic(_PREWARM_QUERY, thread_name="honcho-prewarm-dialectic", fired_at=0,
-                                      log_label="dialectic prewarm", use_query_rewrite=False)
-                logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)
-            else:
-                logger.debug("Honcho generic dialectic prewarm skipped: awaiting first user message")
+        # Recall must wait for a current user request. Generic session-start
+        # reasoning cannot establish relevance for an unknown future question.
+        if getattr(cfg, 'selection_mode', 'lexical') == 'semantic' and self._recall_mode != 'tools':
+            try:
+                from plugins.memory.honcho.evidence import prepare_selection_client
+                prepare_selection_client()
+            except Exception as exc:
+                logger.debug('Honcho selection setup unavailable: %s', type(exc).__name__)
 
         self._session_initialized = True
 
@@ -471,6 +470,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def _log_injection(self, reason: str, payload: str = "") -> str:
         """Append one record of what this turn injected and why, then return ``payload`` unchanged. Never raises.
         The reason matters because prefetch has several ways to return nothing and each needs a different fix."""
+        from plugins.memory.honcho.evidence import HonchoEvidenceContext
+        self._last_recall_count = (sum(line.startswith('{"source_id":') for line in payload.render().splitlines())
+                                   if isinstance(payload, HonchoEvidenceContext) else 0)
         path = self._injection_log_path
         if not path:
             return payload
@@ -557,47 +559,26 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             logger.debug("Honcho first-turn dialectic still running after %.1fs — will surface on next turn", dia_wait)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Base context (representation + card, refreshed on context_cadence) plus the
-        dialectic supplement (refreshed on dialectic_cadence), within the context budget.
-        Empty in tools-only mode."""
+        """Bounded current-query automatic recall. Tools-only stays empty.
+        No previous-turn cache, generic prewarm or broad profile fallback."""
         if self._cron_skipped or self._recall_mode == "tools":
             return self._log_injection("cron-or-tools-mode")
 
-        if self._recall_sync:
-            from plugins.memory.honcho.recall_sync import prefetch_sync
-            notice = self._pop_auth_notice() or self._pop_peer_notice()
-            payload = "\n\n".join(part for part in (notice, prefetch_sync(self, query)) if part)
-            return self._log_injection("injected" if payload else "recall-sync-empty", payload)
+        # Discard legacy pending slots without publishing them. They may belong
+        # to a previous query, including after a trivial turn.
+        if not self._recall_sync:
+            with self._prefetch_lock:
+                self._prefetch_result, self._prefetch_result_fired_at = "", -999
+        # Both automatic modes use the bounded current-query path. Previous-turn
+        # cached prose and dialectic results are never evidence for this request.
+        from plugins.memory.honcho.recall_sync import prefetch_sync
+        notice = self._pop_auth_notice() or self._pop_peer_notice()
+        payload = prefetch_sync(self, self._current_recall_query(query)) or notice
+        return self._log_injection("injected" if payload else "recall-sync-empty", payload)
 
-        first_turn_base_deadline = (time.monotonic() + self._first_turn_wait(self._FIRST_TURN_BASE_TIMEOUT)
-                                    if self._turn_count <= 1 else None)
-
-        if not self._session_ready():
-            # Only turn 1 may wait for session init; later turns fail open.
-            self._start_session_init_background()
-            if first_turn_base_deadline is not None and self._init_thread is not None:
-                self._init_thread.join(timeout=max(0.0, first_turn_base_deadline - time.monotonic()))
-            if not self._session_ready():
-                # A failed init still owes the user its one-time notice.
-                return self._log_injection("session-not-ready", self._pop_auth_notice() or self._pop_peer_notice())
-
-        # Trivial turns start no work, but may consume a ready pending result.
-        if self._is_trivial_prompt(query):
-            ready = self._consume_pending_dialectic()
-            return self._log_injection("trivial-prompt", self._truncate_to_budget(ready) if ready else "")
-
-        # One-time notice, relayed by the model, that auth is dead and memory is paused.
-        parts = [self._pop_auth_notice()]
-        # First-turn mode suppresses only the base layer; dialectic is independent.
-        if not (self._injection_frequency == "first-turn" and self._turn_count > 1):
-            parts.append(self._fetch_base_context_layer(query, first_turn_base_deadline))
-        self._first_turn_dialectic_wait(query)
-        # Consume only results that are already ready; later turns never wait.
-        parts.append(self._consume_pending_dialectic())
-        parts = [p for p in parts if p and p.strip()]
-        if not parts:
-            return self._log_injection("fetched-but-empty")
-        return self._log_injection("injected", self._truncate_to_budget("\n\n".join(parts)))
+    def recall_status(self):
+        count = getattr(self, '_last_recall_count', 0)
+        return RecallStatus(provider_label='Honcho', count=count) if count else None
 
     def _pop_auth_notice(self) -> str:
         """One-time model-facing notice that Honcho auth expired and memory is paused."""
@@ -647,39 +628,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         return (truncated[:last_space] if last_space > budget_chars * 0.8 else truncated) + " …"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Fire background prefetch threads for the upcoming turn.
-        Context and dialectic refreshes have independent cadence controls."""
-        if self._cron_skipped or self._recall_mode == "tools" or self._recall_sync:
-            return
-        if not self._session_ready() or not query:
-            self._start_session_init_background()
-            return
-        # Trivial prompts don't warrant either a context refresh or a dialectic call.
-        if self._is_trivial_prompt(query):
-            return
-
-        # First-turn-only base context never needs a later refresh.
-        context_due = self._context_cadence <= 1 or (self._turn_count - self._last_context_turn) >= self._context_cadence
-        if self._injection_frequency != "first-turn" and context_due:
-            self._last_context_turn = self._turn_count
-            try:
-                self._manager.prefetch_context(self._session_key, query)
-            except Exception as e:
-                logger.debug("Honcho context prefetch failed: %s", e)
-
-        # Dialectic layer: a hung call older than timeout × multiplier counts as dead.
-        if self._thread_is_live():
-            logger.debug("Honcho dialectic prefetch skipped: prior thread still running")
-            return
-        # Cadence gate, widened by the empty-streak backoff so a persistently silent
-        # backend doesn't retry every turn forever.
-        effective = self._effective_cadence()
-        if (self._turn_count - self._last_dialectic_turn) < effective:
-            logger.debug("Honcho dialectic prefetch skipped: effective cadence %d (base %d, empty streak %d), turns since last: %d",
-                         effective, self._dialectic_cadence, self._dialectic_empty_streak,
-                         self._turn_count - self._last_dialectic_turn)
-            return
-        self._spawn_dialectic(query, thread_name="honcho-prefetch", fired_at=self._turn_count, log_label="prefetch")
+        """Current-query retrieval happens at turn start, never for a future turn.
+        End-of-turn prefetch cannot know the next question and must not publish
+        generic prose into its cache."""
+        return
 
     # Shared with the core prefetch gate so the two classifiers can never drift apart.
     _is_trivial_prompt = staticmethod(is_trivial_prompt)
@@ -693,7 +645,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             path = resolve_config_path()
             try:
                 stat = path.stat()
-                memo_key = (str(path), stat.st_mtime_ns, stat.st_size)
+                memo_key = (str(path), stat.st_mtime_ns, stat.st_size,
+                            hashlib.sha256(path.read_bytes()).digest())
             except OSError:
                 memo_key = (str(path), None, None)
             cached = self._identity_signature_memo.get(memo_key)
@@ -716,9 +669,27 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         except Exception:
             return {}
 
+    def _current_recall_query(self, query: str) -> str:
+        """Resolve a short follow-up with one bounded preceding user utterance.
+        Standalone questions and explicit pivots never inherit prior topics."""
+        text = (query or "").strip()
+        previous = getattr(self, "_recall_previous_user_message", "")
+        followup = re.match(
+            r"^(?:and\b|same\b|which of (?:the|those)\b|what about\b|und\b|dieselbe\b|welche von\b)",
+            text, re.IGNORECASE,
+        )
+        if followup and previous:
+            return f"Previous user request (reference only):\n{previous[-1000:]}\n\nCurrent user request:\n{text}"
+        return text
+
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence, and record who wrote this turn: a shared session carries
         several participants, and the peer resolved at session init only names whoever opened it."""
+        author = (kwargs.get("author_id") or None, bool(kwargs.get("author_is_bot")))
+        same_author = author == getattr(self, "_recall_latest_author", author)
+        self._recall_previous_user_message = getattr(self, "_recall_latest_user_message", "") if same_author else ""
+        self._recall_latest_author = author
+        self._recall_latest_user_message = (message or "")[-1000:]
         self._recall_generation = object()
         self._turn_count = turn_number
         self._turn_author = {"id": kwargs.get("author_id") or None, "name": kwargs.get("author_name") or None,
@@ -727,6 +698,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
         """Discard in-flight recall even when the configured backend session is pinned."""
         self._recall_generation = object()
+        self._recall_previous_user_message = ""
+        self._recall_latest_user_message = ""
+        self._last_recall_request = None
 
     # ----- Writes -----
 

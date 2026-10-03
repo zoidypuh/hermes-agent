@@ -118,7 +118,7 @@ class DialecticMixin:
             return self._dialectic_depth_levels[pass_idx]
         mapping = self._PROPORTIONAL_LEVELS.get((self._dialectic_depth, pass_idx))
         if mapping is None or mapping == "base":
-            base = self._config.dialectic_reasoning_level if self._config else "low"
+            base = getattr(self._config, "dialectic_reasoning_level", "low")
             return self._apply_reasoning_heuristic(base, query)
         return mapping
 
