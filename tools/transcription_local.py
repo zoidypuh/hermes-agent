@@ -34,6 +34,10 @@ def _get_local_command_template() -> Optional[str]:
     configured = str(get_env_value(LOCAL_STT_COMMAND_ENV) or "").strip()
     if configured:
         return configured
+    from tools.transcription_whisper_cpp import whisper_cpp_command
+    managed_command = whisper_cpp_command()
+    if managed_command:
+        return managed_command
     whisper_binary = _find_whisper_binary()
     return (f"{shlex.quote(whisper_binary)} {{input_path}} --model {{model}} --output_format txt "
             "--output_dir {output_dir} --language {language}") if whisper_binary else None
@@ -281,6 +285,10 @@ def _transcribe_local_command(
     if not math.isfinite(timeout) or timeout <= 0:
         timeout = 300
     try:
+        if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
+            from tools.transcription_whisper_cpp import ensure_whisper_cpp_models, whisper_cpp_command
+            if command_template == whisper_cpp_command():
+                ensure_whisper_cpp_models(normalized_model)
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
             prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
             if prep_error:
