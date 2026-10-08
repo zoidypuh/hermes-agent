@@ -265,6 +265,8 @@ def _native_enabled(agent) -> bool:
 def prepare_switchboard_turn(agent, user_message, persist_user_message, callback, turn_id, *, input_generation=None):
     """Return controller + API-local message/callback, or the original values."""
     clean_message = persist_user_message if persist_user_message is not None else user_message
+    from agent.goblin_clarify import bind_request
+    bind_request(agent, clean_message, turn_id=turn_id)
     header = parse_beta_header(clean_message)
     if not _native_enabled(agent) or header is None:
         return None, user_message, persist_user_message, callback
@@ -335,6 +337,9 @@ def apply_switchboard_redirect(agent, text: str, api_content: str, *, kind: str 
     needs fresh delivery identities, while captured callbacks for its predecessor
     must remain fenced. Transport cancellation drains before the next stream starts.
     """
+    from agent.goblin_clarify import bind_request
+    route = getattr(agent, "_goblin_request", None)
+    bind_request(agent, text, turn_id=route["turn_id"] if route else getattr(agent, "_current_turn_id", None))
     previous = getattr(agent, "_switchboard_turn", None)
     if previous is None and not _native_enabled(agent):
         return api_content

@@ -54,6 +54,7 @@ def _native(monkeypatch, *, transport=None, current="old-turn", clean=HEADER, ag
     transport = transport or RecordingTransport()
     monkeypatch.setattr(switchboard_stream, "RelayHttpTransport", lambda: transport)
     agent = agent_type(
+        session_id="session", model="test-model",
         platform="tui", _parent_session_id=None, _current_turn_id=current,
         _relay_pending_turn_id="this-turn", _interrupt_requested=False,
         _stream_writer_token=1, _api_call_count=1,

@@ -120,6 +120,11 @@ def _callback_tool(module: str, func: str, callback_attr: str, *arg_specs: _ArgS
     return _tool(module, func, *arg_specs, callback=lambda agent, ctx: getattr(agent, callback_attr, None))
 
 
+def _clarify_callback(agent, ctx):
+    from agent.goblin_clarify import callback_for
+    return callback_for(agent)
+
+
 def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     session_db = agent._get_session_db_for_recall()
     if not session_db:
@@ -249,7 +254,7 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     "memory": _memory,
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
-        callback=lambda agent, ctx: agent.clarify_callback,
+        callback=_clarify_callback,
     ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",

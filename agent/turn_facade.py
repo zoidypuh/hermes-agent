@@ -54,6 +54,7 @@ class TurnFacadeMixin:
         from agent.interrupt_scope import track_in_interrupt_scope
         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
         from agent.switchboard_turn import current_switchboard_turn
+        from agent.goblin_clarify import clear_request
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -203,6 +204,7 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            clear_request(self, relay_turn_id)
             switchboard_turn = current_switchboard_turn(self, relay_turn_id)
             if switchboard_turn is not None:
                 switchboard_turn.close()
