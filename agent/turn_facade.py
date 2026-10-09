@@ -150,6 +150,11 @@ class TurnFacadeMixin:
                 )
             )
 
+            from agent.goblin_clarify import prepare_request_skill
+            user_message, persist_user_message = prepare_request_skill(
+                self, user_message, persist_user_message, conversation_history,
+            )
+
             # Keep the ContextVar scope local (agent tokens may be observed from another thread).
             # A host that owns this thread (Hermes Console) may cancel the turn cross-thread.
             with bind_subagent_parent(self), scoped_runtime_main({}), track_in_interrupt_scope(self):
