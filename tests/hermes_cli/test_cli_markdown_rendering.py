@@ -22,6 +22,43 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "two" in output
 
 
+def test_terminal_tip_background_covers_wrapped_text_without_bleeding(monkeypatch):
+    import cli
+
+    command = 'find /home/gismar -type d -iname "*upnote*"'
+    explanation = 'Sucht rekursiv nach Ordnern mit upnote im Namen, unabhängig von Groß- und Kleinschreibung.'
+    message = f'Before the tip.\n\n```\n=====\n{command}\n{explanation}\n```\n\nAfter the tip.'
+    for width in (24, 40, 80, 160):
+        monkeypatch.setattr(cli, "_terminal_columns", lambda: width)
+        console = Console(file=StringIO(), width=width, force_terminal=True, color_system="truecolor")
+        segments = list(console.render(_render_final_assistant_content(message)))
+        tip_segments = [segment for segment in segments if segment.style and segment.style.bgcolor]
+        assert tip_segments
+        assert all(segment.style.bgcolor.get_truecolor() == (16, 36, 58) for segment in tip_segments)
+        tip_text = ''.join(segment.text for segment in tip_segments)
+        assert ''.join(tip_text.split()) == ''.join(('=====' + command + explanation).split())
+        rendered_text = ''.join(segment.text for segment in segments)
+        assert any(line.strip().startswith('find') for line in rendered_text.splitlines())
+        assert any(line.strip().startswith('Sucht') for line in rendered_text.splitlines())
+        surrounding = [segment for segment in segments if 'Before' in segment.text or 'After' in segment.text]
+        assert surrounding
+        assert all(not (segment.style and segment.style.bgcolor) for segment in surrounding)
+
+
+def test_terminal_tip_styling_preserves_other_markdown_code_blocks():
+    console = Console(file=StringIO(), width=80, force_terminal=True, color_system="truecolor")
+    for message in (
+        '```\nprintf hello\nA normal code block.\n```',
+        '```python\n=====\nprint("hello")\n# A labelled code block.\n```',
+        '```\n=====\nOne line only.\n```',
+        '```\n=====\ncommand\nexplanation\nExtra line.\n```',
+        '=====\ncommand\nexplanation',
+    ):
+        expected = list(console.render(Markdown(message)))
+        actual = list(console.render(_render_final_assistant_content(message)))
+        assert actual == expected
+
+
 def test_final_assistant_content_preserves_ansi_card_background_and_surrounding_markdown():
     card = "\x1b[103m\x1b[30m╭────╮\n│ tip│\n╰────╯\x1b[0m"
     renderable = _render_final_assistant_content("**Hello**\n\n" + card)
