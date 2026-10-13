@@ -434,7 +434,7 @@ def _terminal_width_for_streaming() -> int:
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables
-    from rich.markdown import Markdown
+    from hermes_cli.cli_tip_markdown import TerminalMarkdown
 
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
     panel_width = max(20, _terminal_columns() - 4)
@@ -448,7 +448,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
             return _RichText(realign_markdown_tables(_strip_markdown_syntax(content), panel_width))
         plain = _rich_text_from_ansi(content).plain
         plain = _preserve_windows_dot_segments_for_markdown(plain)
-        return Markdown(realign_markdown_tables(plain, panel_width))
+        return TerminalMarkdown(realign_markdown_tables(plain, panel_width))
 
     # Models often copy tool output without its ANSI escapes. A complete box
     # is preformatted content even then: Markdown would collapse its newlines
