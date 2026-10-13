@@ -57,9 +57,11 @@ def _transcribe_provider_attempt(
                 file_path = trimmed
                 cleanup.callback(shutil.rmtree, str(Path(trimmed).parent), ignore_errors=True)
         if not is_local:
-            error = tt._validate_audio_file_size(Path(file_path))
-            if error:
-                return error
+            limit = tt.upload_limit(provider, tt._limit_model_name(provider, stt_config, model))
+            if tt.exceeds_upload_limit(file_path, limit):
+                hints = tt._resolve_dispatch_hints(file_path, provider, stt_config, model, source)
+                return tt.transcribe_oversized(
+                    file_path, limit, lambda part: tt._route_stt_provider(part, provider, stt_config, *hints))
         return tt._dispatch_stt_provider(file_path, provider, stt_config, model, source)
 
 
