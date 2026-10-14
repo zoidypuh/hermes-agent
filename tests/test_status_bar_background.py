@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from cli import HermesCLI
-from agent import ai_usage, gpu, usage_api
+from agent import ai_usage, gpu, usage_api, provider_usage_api
 
 
 @pytest.mark.parametrize("metric", ["gpu", "ai_usage"])
@@ -19,9 +19,12 @@ def test_status_repaint_does_not_wait_for_metrics_http(monkeypatch, metric):
     requests = []
     payload = {"name": "gpu", "online": True, "gpuUsedGb": 4.0, "gpuTotalGb": 32.0}
     if metric == "ai_usage":
-        payload = {"chatgpt": {"online": True, "remaining": 75},
-                   "grok": {"online": True, "remaining": 51},
-                   "openrouter": {"online": True, "remainingCredits": 8.49}}
+        payload = {"source": "hetzner-direct", "current": {
+            "chatgpt": {"online": True, "remaining": 75},
+            "grokAccounts": [{"accountId": account, "online": True, "remaining": value}
+                             for account, value in zip(ai_usage.GROK_ACCOUNT_ORDER, (51, 0, 0))],
+            "muse": {"online": True, "remaining": 96},
+            "openrouter": {"online": True, "remainingCredits": 8.49}}}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -41,6 +44,9 @@ def test_status_repaint_does_not_wait_for_metrics_http(monkeypatch, metric):
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     monkeypatch.setenv("USAGE_API_URL", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(provider_usage_api, "PROVIDER_USAGE_URL",
+                        f"http://127.0.0.1:{server.server_port}/provider-history.json")
+    provider_usage_api.clear_cache()
     usage_api.clear_cache()
     gpu.clear_cache()
     ai_usage.clear_cache()
@@ -79,14 +85,16 @@ def test_status_repaint_does_not_wait_for_metrics_http(monkeypatch, metric):
             time.sleep(0.01)
         assert snapshot[field] == ("4.0G" if metric == "gpu" else "75%")
         if metric == "ai_usage":
-            assert snapshot["grok_label"] == "51%"
-            assert snapshot["openrouter_label"] == "8,49$"
+            assert snapshot["grok_label"] == "51%, 0%, 0%"
+            assert snapshot["muse_label"] == "96%"
+            assert snapshot["openrouter_label"] == "$8.490"
 
         # Expire both layers, then hold the next HTTP response. The previous
         # reading must remain visible while the refresh is pending.
         entered.clear()
         release.clear()
         usage_api.clear_cache()
+        provider_usage_api.clear_cache()
         gpu.clear_cache()
         ai_usage.clear_cache()
         stamp, reading, pending = obj._status_bar_metric_cache[metric]
@@ -109,5 +117,6 @@ def test_status_repaint_does_not_wait_for_metrics_http(monkeypatch, metric):
                 break
             time.sleep(0.01)
         usage_api.clear_cache()
+        provider_usage_api.clear_cache()
         gpu.clear_cache()
         ai_usage.clear_cache()
