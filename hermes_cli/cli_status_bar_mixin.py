@@ -169,28 +169,20 @@ class CLIStatusBarMixin:
 
     def _handle_ai_usage_command(self, cmd_original: str) -> None:
         """``/ai-usage`` toggles, ``/ai-usage on|off|status`` sets, ``/ai-usage status``
-        reports the setting plus live ChatGPT/Grok remaining quotas and OpenRouter
-        credits. Persisted to ``display.ai_usage``."""
+        reports OpenAI, all three Grok accounts, Meta/Muse and OpenRouter
+        credits from the Hetzner snapshot. Persisted to ``display.ai_usage``."""
         from cli import save_config_value
         parts = (cmd_original or "").split()
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 
         try:
-            from agent.ai_usage import (
-                format_chatgpt,
-                format_grok,
-                format_openrouter,
-                read_chatgpt_usage,
-                read_grok_usage,
-                read_openrouter_credits,
-            )
-            _cgpt = read_chatgpt_usage(use_cache=False)
-            _grok = read_grok_usage(use_cache=False)
-            _or = read_openrouter_credits(use_cache=False)
-            _detail = (
-                f" — ChatGPT {format_chatgpt(_cgpt) or 'n/a'},"
-                f" Grok {format_grok(_grok) or 'n/a'},"
-                f" OpenRouter {format_openrouter(_or) or 'n/a'}"
+            from agent.ai_usage import read_footer_usage
+
+            labels = read_footer_usage(use_cache=False)
+            _detail = " — " + ", ".join(
+                f"{name} {labels[key + '_label'] or 'n/a'}"
+                for key, name in (("chatgpt", "OpenAI"), ("grok", "Grok"),
+                                  ("muse", "Meta/Muse"), ("openrouter", "OpenRouter"))
             )
         except Exception:
             _detail = ""
@@ -380,6 +372,8 @@ class CLIStatusBarMixin:
             "chatgpt_category": "dim",
             "grok_label": "",
             "grok_category": "dim",
+            "muse_label": "",
+            "muse_category": "dim",
             "openrouter_label": "",
             "openrouter_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
@@ -431,34 +425,15 @@ class CLIStatusBarMixin:
             except Exception:
                 pass
 
-        # Refresh the quota group together so all three share one HTTP payload.
-        # Keep the prior labels visible until the background refresh completes.
+        # One Hetzner snapshot per background refresh, independent of GPU HTTP.
+        # Keep the prior labels visible until the refresh completes.
         if getattr(self, "_ai_usage_visible", False):
             try:
-                from agent.ai_usage import (
-                    credits_category,
-                    format_chatgpt,
-                    format_grok,
-                    format_openrouter,
-                    read_chatgpt_usage,
-                    read_grok_usage,
-                    read_openrouter_credits,
-                    usage_category,
-                )
+                from agent.ai_usage import read_footer_usage
 
-                readings = self._read_status_bar_metric(
-                    "ai_usage",
-                    lambda: (read_chatgpt_usage(), read_grok_usage(), read_openrouter_credits()),
-                    600.0,
-                )
+                readings = self._read_status_bar_metric("ai_usage", read_footer_usage, 600.0)
                 if readings is not None:
-                    _cgpt, _grok, _or = readings
-                    snapshot["chatgpt_label"] = format_chatgpt(_cgpt)
-                    snapshot["chatgpt_category"] = usage_category(_cgpt)
-                    snapshot["grok_label"] = format_grok(_grok)
-                    snapshot["grok_category"] = usage_category(_grok)
-                    snapshot["openrouter_label"] = format_openrouter(_or)
-                    snapshot["openrouter_category"] = credits_category(_or)
+                    snapshot.update(readings)
             except Exception:
                 pass
 
@@ -1195,7 +1170,7 @@ class CLIStatusBarMixin:
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, gpu, chatgpt, grok,
-        openrouter, title, total_tokens (opt-in only). gpu/chatgpt/grok/openrouter render
+        muse, openrouter, title, total_tokens (opt-in only). gpu/chatgpt/grok/muse/openrouter render
         as a pinned VRAM + quota cluster at the END of the bar; other fields keep their
         fixed order. The config controls visibility only.
         """
@@ -1209,11 +1184,12 @@ class CLIStatusBarMixin:
             fields = status_bar.get("fields") if isinstance(status_bar, dict) else None
             if isinstance(fields, list) and fields:
                 result = {str(f) for f in fields}
-                # Quota cluster is GPU + ChatGPT + Grok + OpenRouter. Older
-                # configs listed chatgpt/grok before openrouter existed; keep
-                # remaining credits visible without a manual fields edit.
+                # Legacy quota allowlists predate OpenRouter and Muse. Keep the
+                # expanded cluster visible without modifying profile configs.
                 if "openrouter" not in result and ("chatgpt" in result or "grok" in result):
                     result.add("openrouter")
+                if "chatgpt" in result or "grok" in result:
+                    result.add("muse")
                 result = frozenset(result)
         except Exception:
             result = None
@@ -1318,6 +1294,17 @@ class CLIStatusBarMixin:
                 segs.append([(_DIM, f"Σ{format_token_count_compact(total_tokens)}")])
         return segs
 
+    def _status_bar_provider_tail(self, snapshot, field_set) -> list:
+        """Pinned cluster shared by plain text and prompt_toolkit rendering."""
+        tail = []
+        for name in ("gpu", "chatgpt", "grok", "muse", "openrouter"):
+            label = snapshot.get(f"{name}_label") or ""
+            if label and (field_set is None or name in field_set):
+                if name == "gpu":
+                    label = label.removesuffix("G") + "g"
+                tail.append((self._gpu_status_style(snapshot.get(f"{name}_category", "dim")), label))
+        return tail
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Compact one-line session status string for the TUI footer."""
         try:
@@ -1329,23 +1316,10 @@ class CLIStatusBarMixin:
             show_title = field_set is None or "title" in field_set
             battery_label = (snapshot.get("battery_label") or ""
                              if field_set is None or "battery" in field_set else "")
-            gpu_label = (snapshot.get("gpu_label") or ""
-                         if field_set is None or "gpu" in field_set else "")
-            chatgpt_label = (snapshot.get("chatgpt_label") or ""
-                             if field_set is None or "chatgpt" in field_set else "")
-            grok_label = (snapshot.get("grok_label") or ""
-                          if field_set is None or "grok" in field_set else "")
-            openrouter_label = (snapshot.get("openrouter_label") or ""
-                                if field_set is None or "openrouter" in field_set else "")
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
             parts = ["".join(t for _, t in seg) for seg in segs] or [f"⚕ {model_short}"]
-            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51% │ 8,49$.
-            # Battery stays pinned first. OpenRouter remaining credits are last.
-            for tail_label in (gpu_label, chatgpt_label, grok_label, openrouter_label):
-                if tail_label:
-                    parts.append(tail_label)
             # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
@@ -1353,6 +1327,8 @@ class CLIStatusBarMixin:
                 text = f"{parts[0]} │ " + " · ".join(parts[1:]) if battery_label else " · ".join(parts)
             else:
                 text = (" · " if width < 76 else " │ ").join(parts)
+            for _, label in self._status_bar_provider_tail(snapshot, field_set):
+                text += f" | {label}"
             return self._right_align_status_title(text, session_title, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -1396,31 +1372,11 @@ class CLIStatusBarMixin:
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))
                 frags[0:0] = [(_SB, " "), (battery_style, battery_label), (_DIM, " │")]
-            # VRAM + quota cluster pinned at the END: 19.0/31.8G │ 75% │ 51% │ 8,49$.
-            # Insert before the one-cell right margin. OpenRouter is last.
-            tail_segs = []
-            gpu_label = snapshot.get("gpu_label") or ""
-            if gpu_label and _ok("gpu"):
-                tail_segs.append(
-                    (self._gpu_status_style(snapshot.get("gpu_category", "dim")), gpu_label))
-            chatgpt_label = snapshot.get("chatgpt_label") or ""
-            if chatgpt_label and _ok("chatgpt"):
-                tail_segs.append(
-                    (self._gpu_status_style(snapshot.get("chatgpt_category", "dim")),
-                     chatgpt_label))
-            grok_label = snapshot.get("grok_label") or ""
-            if grok_label and _ok("grok"):
-                tail_segs.append(
-                    (self._gpu_status_style(snapshot.get("grok_category", "dim")), grok_label))
-            openrouter_label = snapshot.get("openrouter_label") or ""
-            if openrouter_label and _ok("openrouter"):
-                tail_segs.append(
-                    (self._gpu_status_style(snapshot.get("openrouter_category", "dim")),
-                     openrouter_label))
+            tail_segs = self._status_bar_provider_tail(snapshot, field_set)
             if tail_segs:
                 tail_frags: list = []
                 for style, text in tail_segs:
-                    tail_frags.extend([(_DIM, " │ "), (style, text)])
+                    tail_frags.extend([(_DIM, " | "), (style, text)])
                 frags[-1:-1] = tail_frags
 
             frags = self._right_align_status_title_fragments(frags, session_title, width)

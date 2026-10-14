@@ -1,15 +1,13 @@
-"""Remaining-usage read-outs for the CLI/TUI status bar (ChatGPT, Grok, OpenRouter).
+"""Hetzner provider quotas and credits for the classic CLI footer.
 
-Reads the local Usage API over Tailscale Magic DNS
-(``http://winpc-2.tailed34e0.ts.net:8769/api/usage``). Missing / offline
-sections stay unavailable so the footer can hide them.
-
-OpenRouter remaining credits render as ``8,49$``.
+VRAM has its own desktop source. Missing/offline provider sections stay hidden;
+missing individual Grok accounts keep their slot as n/a instead of shifting.
 """
 
 from __future__ import annotations
 
 import time
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,13 +55,15 @@ def _clamp_percent(value) -> Optional[int]:
         number = float(value)
     except (TypeError, ValueError):
         return None
-    return max(0, min(100, int(round(number))))
+    if not math.isfinite(number):
+        return None
+    return max(0, min(100, round(number)))
 
 
 def _usage_api_section(name: str, use_cache: bool = True) -> Optional[dict]:
     try:
-        from agent.usage_api import fetch_usage
-        payload = fetch_usage(use_cache=use_cache)
+        from agent.provider_usage_api import fetch_provider_usage
+        payload = fetch_provider_usage(use_cache=use_cache)
     except Exception:
         return None
     section = (payload or {}).get(name) if isinstance(payload, dict) else None
@@ -72,18 +72,7 @@ def _usage_api_section(name: str, use_cache: bool = True) -> Optional[dict]:
 
 def _chatgpt_from_usage_api(use_cache: bool = True) -> UsageStatus:
     section = _usage_api_section("chatgpt", use_cache=use_cache)
-    if not section or section.get("online") is False:
-        return CHATGPT_UNAVAILABLE
-    remaining = section.get("remaining")
-    if remaining is None:
-        remaining = section.get("weeklyRemaining")
-    remaining = _clamp_percent(remaining)
-    if remaining is None:
-        used = _clamp_percent(section.get("used") or section.get("weeklyUsed"))
-        if used is None:
-            return CHATGPT_UNAVAILABLE
-        remaining = 100 - used
-    return UsageStatus(available=True, remaining=remaining)
+    return _remaining_status(section, weekly_fallback=True)
 
 
 def _grok_from_usage_api(use_cache: bool = True) -> UsageStatus:
@@ -153,6 +142,60 @@ def read_openrouter_credits(use_cache: bool = True) -> CreditsStatus:
     return _openrouter_from_usage_api(use_cache=False)
 
 
+# Explicit identities, not API list order or the highest remaining quota.
+GROK_ACCOUNT_ORDER = (
+    "thegismar@gmail.com",
+    "grok3@zoidbergcg.com",
+    "grok4@zoidbergcg.com",
+)
+
+
+def _remaining_status(section, *, weekly_fallback: bool = False) -> UsageStatus:
+    if not isinstance(section, dict) or section.get("online") is False:
+        return UNAVAILABLE
+    raw = section.get("remaining")
+    if raw is None and weekly_fallback:
+        raw = section.get("weeklyRemaining")
+    remaining = _clamp_percent(raw)
+    if remaining is None:
+        raw_used = section.get("used")
+        if raw_used is None and weekly_fallback:
+            raw_used = section.get("weeklyUsed")
+        used = _clamp_percent(raw_used)
+        remaining = 100 - used if used is not None else None
+    return UsageStatus(available=remaining is not None, remaining=remaining)
+
+
+def read_footer_usage(use_cache: bool = True) -> dict:
+    """Build the complete quota group from one consistent Hetzner snapshot."""
+    from agent.provider_usage_api import fetch_provider_usage
+
+    payload = fetch_provider_usage(use_cache=use_cache) or {}
+    chatgpt = _remaining_status(payload.get("chatgpt"), weekly_fallback=True)
+    muse = _remaining_status(payload.get("muse"))
+    accounts = payload.get("grokAccounts")
+    by_id = {item.get("accountId"): item for item in accounts if isinstance(item, dict)} if isinstance(accounts, list) else {}
+    grok = [_remaining_status(by_id.get(account)) for account in GROK_ACCOUNT_ORDER]
+    available = [status for status in grok if status.available]
+    grok_label = ", ".join(format_grok(status) or "n/a" for status in grok) if available else ""
+    worst = min(available, key=lambda status: status.remaining if status.remaining is not None else 100) if available else UNAVAILABLE
+    section = payload.get("openrouter")
+    credits = OPENROUTER_UNAVAILABLE
+    if isinstance(section, dict) and section.get("online") is not False:
+        try:
+            value = float(section.get("remainingCredits", "nan"))
+            if math.isfinite(value):
+                credits = CreditsStatus(available=True, remaining=max(0.0, value))
+        except (TypeError, ValueError):
+            pass
+    return {
+        "chatgpt_label": format_chatgpt(chatgpt), "chatgpt_category": usage_category(chatgpt),
+        "grok_label": grok_label, "grok_category": usage_category(worst),
+        "muse_label": format_chatgpt(muse), "muse_category": usage_category(muse),
+        "openrouter_label": format_openrouter(credits), "openrouter_category": credits_category(credits),
+    }
+
+
 def clear_cache() -> None:
     """Drop memoised readings (used by tests)."""
     _cache.clear()
@@ -193,8 +236,7 @@ def format_grok(status: UsageStatus) -> str:
 
 
 def format_openrouter(status: CreditsStatus) -> str:
-    """Compact remaining-credits label like ``8,49$`` (empty if N/A)."""
+    """Compact dollar balance like ``$9.259`` (empty if N/A)."""
     if not status.available or status.remaining is None:
         return ""
-    euros = f"{status.remaining:.2f}".replace(".", ",")
-    return f"{euros}$"
+    return f"${status.remaining:.3f}"

@@ -20,10 +20,10 @@ def setup_function(_fn):
     clear_cache()
 
 
-def test_format_openrouter_comma_dollar():
-    assert format_openrouter(CreditsStatus(available=True, remaining=8.49)) == "8,49$"
-    assert format_openrouter(CreditsStatus(available=True, remaining=8.4)) == "8,40$"
-    assert format_openrouter(CreditsStatus(available=True, remaining=0)) == "0,00$"
+def test_format_openrouter_three_decimal_dollars():
+    assert format_openrouter(CreditsStatus(available=True, remaining=8.49)) == "$8.490"
+    assert format_openrouter(CreditsStatus(available=True, remaining=8.4)) == "$8.400"
+    assert format_openrouter(CreditsStatus(available=True, remaining=0)) == "$0.000"
     assert format_openrouter(CreditsStatus(available=False)) == ""
     assert format_openrouter(CreditsStatus(available=True, remaining=None)) == ""
 
@@ -38,15 +38,15 @@ def test_credits_category_low_first():
 
 def test_read_openrouter_credits_from_usage_api():
     payload = {"openrouter": {"online": True, "remainingCredits": 8.49}}
-    with patch("agent.usage_api.fetch_usage", return_value=payload):
+    with patch("agent.provider_usage_api.fetch_provider_usage", return_value=payload):
         status = read_openrouter_credits(use_cache=False)
     assert status.available is True
     assert abs(status.remaining - 8.49) < 1e-9
-    assert format_openrouter(status) == "8,49$"
+    assert format_openrouter(status) == "$8.490"
 
 
 def test_read_openrouter_hides_when_api_offline():
-    with patch("agent.usage_api.fetch_usage", return_value=None):
+    with patch("agent.provider_usage_api.fetch_provider_usage", return_value=None):
         status = read_openrouter_credits(use_cache=False)
     assert status.available is False
     assert format_openrouter(status) == ""
@@ -58,7 +58,7 @@ def test_read_chatgpt_and_grok_from_usage_api():
         "grok": {"online": True, "remaining": 51},
         "openrouter": {"online": False},
     }
-    with patch("agent.usage_api.fetch_usage", return_value=payload):
+    with patch("agent.provider_usage_api.fetch_provider_usage", return_value=payload):
         assert format_chatgpt(read_chatgpt_usage(use_cache=False)) == "75%"
         assert format_grok(read_grok_usage(use_cache=False)) == "51%"
         assert format_openrouter(read_openrouter_credits(use_cache=False)) == ""
