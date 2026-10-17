@@ -124,6 +124,7 @@ export const coreCommands: SlashCommand[] = [
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
+      ctx.ran?.()
     }
   },
 
@@ -197,6 +198,7 @@ export const coreCommands: SlashCommand[] = [
       const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
+        ctx.ran?.()
         patchUiState({ status: t('slashCmd.core.clear.forgingSession') })
         ctx.session.newSession(
           isNew ? t('slashCmd.core.clear.newSessionStarted') : undefined,
@@ -546,6 +548,8 @@ export const coreCommands: SlashCommand[] = [
       // persisted before this process started.  Render the TUI's own
       // transcript so `/history` actually reflects what the user just did.
       const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
+
+      ctx.ran?.()
 
       if (!items.length) {
         return ctx.transcript.sys(t('slashCmd.core.history.noConversation'))
