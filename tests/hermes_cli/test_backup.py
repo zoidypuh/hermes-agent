@@ -1028,7 +1028,7 @@ class TestBackupEdgeCases:
 
     def test_cron_outputs_captured_before_slow_database_snapshot(self, tmp_path, monkeypatch):
         """Cron can prune an output during a long DB copy without losing it from the archive."""
-        import hermes_cli.backup as backup
+        from hermes_cli import backup
         hermes_home = tmp_path / '.hermes'
         output = hermes_home / 'cron/output/job/response.md'
         output.parent.mkdir(parents=True)
@@ -2068,12 +2068,12 @@ class TestRunPreUpdateBackup:
 
 
 # ---------------------------------------------------------------------------
-# Pre-migration backup (hermes claw migrate safety net)
+# Pre-migration backup (safety net for agent imports, e.g. hermes import-agent openclaw)
 # ---------------------------------------------------------------------------
 
 class TestPreMigrationBackup:
     """Tests for create_pre_migration_backup — the auto-backup
-    ``hermes claw migrate`` runs before mutating ~/.hermes/."""
+    ``hermes import-agent openclaw`` runs before mutating ~/.hermes/."""
 
     @pytest.fixture
     def hermes_home(self, tmp_path):
