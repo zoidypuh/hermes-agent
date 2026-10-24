@@ -8,7 +8,8 @@ from agent import goblin_clarify as goblin
 UID = "807c6dde-253f-4754-92f5-419b89319a6c"
 
 
-def test_compact_modes_and_literal_task_load_real_skill_once(tmp_path, monkeypatch):
+@pytest.mark.parametrize("header_fields", ["", " tts=xai speech_tags=supported", " tts=openai speech_tags=omit"])
+def test_compact_modes_and_literal_task_load_real_skill_once(tmp_path, monkeypatch, header_fields):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.skill_commands import reload_skills
 
@@ -22,14 +23,14 @@ def test_compact_modes_and_literal_task_load_real_skill_once(tmp_path, monkeypat
     reload_skills()
     try:
         agent = SimpleNamespace(platform="cli")
-        raw = f"[goblin mode='text' uid={UID}] Quote \"hi\".\n\tKeep $HOME and `literal` 😊"
+        raw = f"[goblin mode='text' uid={UID}{header_fields}] Quote \"hi\".\n\tKeep $HOME and `literal` 😊"
         goblin.bind_request(agent, raw)
         assert agent._goblin_request["mode"] == "text"
         api = goblin.load_request_skill(agent, raw, [])
         assert api.startswith(raw + "\n\n")
         assert "Rule: text is silent" in api
         history = [{"role":"user", "content":raw, "api_content":api}]
-        voice = f"[goblin mode='voice' uid={UID}] Next task"
+        voice = f"[goblin mode='voice' uid={UID}{header_fields}] Next task"
         goblin.bind_request(agent, voice)
         assert agent._goblin_request["mode"] == "voice"
         assert goblin.load_request_skill(agent, voice, history) == voice

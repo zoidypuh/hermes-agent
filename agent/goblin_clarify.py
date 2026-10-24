@@ -13,7 +13,7 @@ def bind_request(agent, message, *, turn_id=None):
         return
     if not isinstance(message, str):
         return
-    compact = re.match(r"\A\[goblin mode='(text|voice)' uid=([0-9a-f-]{36})\](?:\s|$)", message)
+    compact = re.match(r"\A\[goblin mode='(text|voice)' uid=([0-9a-f-]{36})(?: tts=(?:xai|openai) speech_tags=(?:supported|omit))?\](?:\s|$)", message)
     if compact:
         try:
             uid = str(uuid.UUID(compact[2]))
@@ -34,7 +34,7 @@ def bind_request(agent, message, *, turn_id=None):
         uid = str(uuid.UUID(fields.get("uid", "")))
     except ValueError:
         return
-    if fields.get("agent") not in {"mara", "vera", "lara"}:
+    if fields.get("agent") not in {"kira", "mara", "vera", "lara"}:
         return
     url = fields.get("clarify", "")
     if url and not re.fullmatch(r"https?://[A-Za-z0-9.:-]+", url):
