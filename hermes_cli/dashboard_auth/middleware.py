@@ -46,12 +46,17 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/api/auth/providers", "/api/mcp/oauth/callback/",
     "/assets/", "/dashboard-plugins/", "/favicon.ico", "/ds-assets/", "/fonts/", "/fonts-terminal/")
 
+# Page icons, matched exactly. Browsers fetch them without cookies (the Webapp's page icon and
+# home-screen icon are ``/apple-touch-icon.png``), so behind the gate they hit the sign-in redirect
+# and log an auto-SSO ``login_start`` with no sign-in behind it.
+_GATE_PUBLIC_ICONS: frozenset[str] = frozenset({"/apple-touch-icon.png"})
+
 
 def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
-    ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
-    prefix-matched."""
-    return path in PUBLIC_API_PATHS or any(
+    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) and :data:`_GATE_PUBLIC_ICONS`
+    matched exactly so ``/api/status`` never exposes ``/api/status/extension``;
+    :data:`_GATE_PUBLIC_PREFIXES` prefix-matched."""
+    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_ICONS or any(
         path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
 
 
@@ -147,6 +152,29 @@ def _verify_access_token(
     return scan_session_providers(
         provider_hint, lambda p: p.verify_session(access_token=access_token),
         phase="verify" if audit else "bearer verify", log=_log, on_unreachable=_audit_unreachable)
+
+
+def peek_session(request: Request):
+    """The verified Session a request to a PUBLIC path carries, or ``None``, with the gate's own
+    checks (Webapp sign-in binding, bearers only a native app was given) and none of its side
+    effects: no refresh, no cookie writes, no audit records, no 401. A public route uses it to
+    decide how much to show; an expired or unverifiable session reads as signed out."""
+    bearer = _extract_bearer(request)
+    if bearer:
+        if not webapp_sign_in.token_works_alone(request, bearer):
+            return None
+        access_token, provider_hint = bearer, None
+    else:
+        gateway = webapp_sign_in.cookie_gateway(request)
+        access_token, _rt = read_session_cookies(request, gateway)
+        if not access_token or (webapp_sign_in.applies(request) and not webapp_sign_in.check(request)):
+            return None
+        provider_hint = read_session_provider(request, gateway)
+    try:
+        return _verify_access_token(
+            request, access_token=access_token, provider_hint=provider_hint, audit=False)
+    except ProviderError:
+        return None
 
 
 async def _serve_refreshed(request: Request, call_next, new_session, provider: str) -> Response:
