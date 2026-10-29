@@ -95,6 +95,10 @@ to collect an inventory.
 
 ## Verification
 
+For the pinned Desktop observability set, read
+`references/desktop-observability.md` and inspect
+`references/observability-pack.yaml` before installation.
+
 Confirm restored packages load from the intended canonical paths, required
 references resolve, pins appear in every consuming usage store, and Desktop
 halves are discoverable. Re-run the appropriate inventory without starting a

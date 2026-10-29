@@ -1,0 +1,15 @@
+name: hermes-observability
+description: Pinned Desktop tools for skills, context, sessions, boards, and hosts.
+version: 1.0.0
+plugins:
+  - repo: AsoTora/hermes-context-overview
+    ref: 286c9dab17576ea641bc7448dd4835882e34e107
+  - repo: Adolanium/hermes-tailscale
+    ref: f4cc92e69859a9ee2e899195f0f2559c10874525
+    subdir: catalog
+  - repo: Senci/hermes-kanban-graph
+    ref: 6dee73134f30bc7d8fc10078dcf1b5a7bed30342
+  - repo: yugasurfer/loaded-skills-indicator
+    ref: 1c501473b192a45cbb36d08d1bc8c51f940ea416
+  - repo: abualnassr/hermes-session-lens
+    ref: 69bc2b183fd376acf27256cd9b43f578a16388ae
